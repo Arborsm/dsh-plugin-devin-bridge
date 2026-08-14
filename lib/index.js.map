@@ -1,0 +1,1 @@
+{"version":3,"file":"index.js","names":[],"sources":["../src/index.ts"],"sourcesContent":["/** Cordis plugin name. */\nexport const name = 'dsh-plugin-template'\n\n/** Start the plugin when Harness loads it. */\nexport function apply(): void {\n  console.log('[dsh-plugin-template] hello world')\n}\n"],"mappings":";;AACA,MAAa,OAAO;;AAGpB,SAAgB,QAAc;CAC5B,QAAQ,IAAI,mCAAmC;AACjD"}

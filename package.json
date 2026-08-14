@@ -1,0 +1,54 @@
+{
+  "name": "dsh-plugin-template",
+  "version": "0.1.0",
+  "description": "Minimal Hello World plugin template for DeepSeek Harness.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24",
+    "dsh": ">=0.1.0-rc.6"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run typecheck && pnpm run build",
+    "prepare": "pnpm run build"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/bugmaker2/dsh-plugin-template.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bugmaker2/dsh-plugin-template/issues"
+  },
+  "homepage": "https://github.com/bugmaker2/dsh-plugin-template",
+  "devDependencies": {
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  }
+}
