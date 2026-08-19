@@ -1,3 +1,20 @@
+# dsh-plugin-devin-bridge bundle patch
+#
+# 把 Devin Connect 反代为 OpenAI Chat Completions 兼容协议，挂载
+# /v1/chat/completions 与 /v1/models 路由到 ctx.webServer。
+#
+# config 通过 schemastery 校验，用户在 profile 中填入真实 token：
+#   token:  devin-session-token$...
+#   model:  glm-5-2 | swe-1-7
+#   apiKey: 可选，保护 /v1/* 接口
+
 - insert:
-    - id: dsh-plugin-template
-      name: dsh-plugin-template
+    - id: devin-bridge
+      name: dsh-plugin-devin-bridge
+      config:
+        baseUrl: "https://server.codeium.com"
+        token: ""
+        model: "glm-5-2"
+        proxy: ""
+        forceHttp1: true
+        apiKey: ""

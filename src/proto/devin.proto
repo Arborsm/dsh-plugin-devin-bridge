@@ -1,0 +1,191 @@
+// Minimal Devin Connect proto definitions for dsh-plugin-devin-bridge.
+// Field numbers match outputs/devin-proto/all-protos.proto for wire compatibility.
+// Only fields actually read/written by the bridge are declared.
+syntax = "proto2";
+
+package exa.api_server_pb;
+
+// ─── Shared types ───────────────────────────────────────────────────────────
+
+message GoogleProtobuf_Timestamp {
+  optional int64 seconds = 1;
+  optional int32 nanos = 2;
+}
+
+// ─── Metadata ───────────────────────────────────────────────────────────────
+
+message ExaCodeiumCommonPb_Metadata {
+  optional string ide_name = 1;
+  optional string extension_version = 2;
+  optional string api_key = 3;
+  optional string locale = 4;
+  optional string os = 5;
+  optional string ide_version = 7;
+  optional string extension_name = 12;
+  optional string f = 31;
+}
+
+// ─── Completion configuration ───────────────────────────────────────────────
+
+message ExaCodeiumCommonPb_CompletionConfiguration {
+  optional uint64 num_completions = 1;
+  optional uint64 max_tokens = 2;
+  optional uint64 max_newlines = 3;
+  optional double temperature = 5;
+  optional uint64 top_k = 7;
+  optional double top_p = 8;
+}
+
+// ─── Image data ─────────────────────────────────────────────────────────────
+
+message ExaCodeiumCommonPb_ImageData {
+  optional string base64_data = 1;
+  optional string mime_type = 2;
+}
+
+// ─── Tool call (delta in response, historical in request) ──────────────────
+
+message ExaCodeiumCommonPb_ChatToolCall {
+  optional string id = 1;
+  optional string name = 2;
+  optional string arguments_json = 3;
+}
+
+// ─── Tool definition (request) ──────────────────────────────────────────────
+
+message ExaChatPb_ChatToolDefinition {
+  optional string name = 1;
+  optional string description = 2;
+  optional string json_schema_string = 3;
+}
+
+// ─── Chat message prompt (request) ──────────────────────────────────────────
+
+message ExaChatPb_ChatMessagePrompt {
+  optional string message_id = 1;
+  optional ExaCodeiumCommonPb_ChatMessageSource source = 2;
+  optional string prompt = 3;
+  repeated ExaCodeiumCommonPb_ChatToolCall tool_calls = 6;
+  optional string tool_call_id = 7;
+  optional bool tool_result_is_error = 9;
+  repeated ExaCodeiumCommonPb_ImageData images = 10;
+  optional string thinking = 11;
+  optional string signature = 12;
+  optional bool thinking_redacted = 13;
+}
+
+// ─── Trajectory reference (request) ─────────────────────────────────────────
+
+message ExaCortexPb_CortexTrajectoryReference {
+  optional string trajectory_id = 1;
+  optional ExaCortexPb_CortexTrajectoryType trajectory_type = 3;
+  optional ExaCortexPb_CortexStepType step_type = 4;
+}
+
+// ─── Model usage stats (response) ───────────────────────────────────────────
+
+message ExaCodeiumCommonPb_ModelUsageStats {
+  optional uint64 input_tokens = 2;
+  optional uint64 output_tokens = 3;
+  optional uint64 cache_write_tokens = 4;
+  optional uint64 cache_read_tokens = 5;
+  optional string model_uid = 9;
+}
+
+// ─── Client model config (model list response) ──────────────────────────────
+
+message ExaCodeiumCommonPb_ClientModelConfig {
+  optional bool disabled = 4;
+  optional bool supports_images = 5;
+  optional ExaCodeiumCommonPb_ModelProvider provider = 10;
+  optional string model_uid = 22;
+}
+
+// ─── Request / Response messages ────────────────────────────────────────────
+
+message GetChatMessageRequest {
+  optional ExaCodeiumCommonPb_Metadata metadata = 1;
+  optional string prompt = 2;
+  repeated ExaChatPb_ChatMessagePrompt chat_message_prompts = 3;
+  optional ChatMessageRequestType request_type = 7;
+  optional ExaCodeiumCommonPb_CompletionConfiguration configuration = 8;
+  repeated ExaChatPb_ChatToolDefinition tools = 10;
+  optional ExaCortexPb_CortexTrajectoryReference trajectory_reference = 15;
+  optional string cascade_id = 16;
+  optional ExaCodeiumCommonPb_ConversationalPlannerMode planner_mode = 20;
+  optional string chat_model_uid = 21;
+  optional string execution_id = 22;
+}
+
+message GetChatMessageResponse {
+  optional string message_id = 1;
+  optional GoogleProtobuf_Timestamp timestamp = 2;
+  optional string delta_text = 3;
+  optional ExaCodeiumCommonPb_StopReason stop_reason = 5;
+  repeated ExaCodeiumCommonPb_ChatToolCall delta_tool_calls = 6;
+  optional ExaCodeiumCommonPb_ModelUsageStats usage = 7;
+  optional string delta_thinking = 9;
+  optional string delta_signature = 10;
+  optional bool thinking_redacted = 11;
+  optional string actual_model_uid = 23;
+}
+
+message GetCascadeModelConfigsRequest {
+  optional ExaCodeiumCommonPb_Metadata metadata = 1;
+}
+
+message GetCascadeModelConfigsResponse {
+  repeated ExaCodeiumCommonPb_ClientModelConfig client_model_configs = 1;
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum ChatMessageRequestType {
+  CHAT_MESSAGE_REQUEST_TYPE_UNSPECIFIED = 0;
+  CHAT_MESSAGE_REQUEST_TYPE_CASCADE = 5;
+}
+
+enum ExaCodeiumCommonPb_ChatMessageSource {
+  ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_UNSPECIFIED = 0;
+  ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER = 1;
+  ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_SYSTEM = 2;
+  ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_TOOL = 4;
+}
+
+enum ExaCodeiumCommonPb_ConversationalPlannerMode {
+  ExaCodeiumCommonPb_ConversationalPlannerMode_CONVERSATIONAL_PLANNER_MODE_UNSPECIFIED = 0;
+  ExaCodeiumCommonPb_ConversationalPlannerMode_CONVERSATIONAL_PLANNER_MODE_DEFAULT = 1;
+}
+
+enum ExaCortexPb_CortexTrajectoryType {
+  ExaCortexPb_CortexTrajectoryType_CORTEX_TRAJECTORY_TYPE_UNSPECIFIED = 0;
+  ExaCortexPb_CortexTrajectoryType_CORTEX_TRAJECTORY_TYPE_CASCADE = 4;
+}
+
+enum ExaCortexPb_CortexStepType {
+  ExaCortexPb_CortexStepType_CORTEX_STEP_TYPE_UNSPECIFIED = 0;
+  ExaCortexPb_CortexStepType_CORTEX_STEP_TYPE_USER_INPUT = 14;
+}
+
+enum ExaCodeiumCommonPb_StopReason {
+  ExaCodeiumCommonPb_StopReason_STOP_REASON_UNSPECIFIED = 0;
+  ExaCodeiumCommonPb_StopReason_STOP_REASON_INCOMPLETE = 1;
+  ExaCodeiumCommonPb_StopReason_STOP_REASON_MAX_TOKENS = 3;
+  ExaCodeiumCommonPb_StopReason_STOP_REASON_PARTIAL = 9;
+  ExaCodeiumCommonPb_StopReason_STOP_REASON_FUNCTION_CALL = 10;
+  ExaCodeiumCommonPb_StopReason_STOP_REASON_ERROR = 13;
+}
+
+enum ExaCodeiumCommonPb_ModelProvider {
+  ExaCodeiumCommonPb_ModelProvider_MODEL_PROVIDER_UNSPECIFIED = 0;
+  ExaCodeiumCommonPb_ModelProvider_MODEL_PROVIDER_WINDSURF = 1;
+  ExaCodeiumCommonPb_ModelProvider_MODEL_PROVIDER_OPENAI = 2;
+  ExaCodeiumCommonPb_ModelProvider_MODEL_PROVIDER_ANTHROPIC = 3;
+}
+
+// ─── Service ────────────────────────────────────────────────────────────────
+
+service ApiServerService {
+  rpc GetChatMessage(GetChatMessageRequest) returns (stream GetChatMessageResponse);
+  rpc GetCascadeModelConfigs(GetCascadeModelConfigsRequest) returns (GetCascadeModelConfigsResponse);
+}

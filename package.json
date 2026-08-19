@@ -1,7 +1,7 @@
 {
-  "name": "dsh-plugin-template",
+  "name": "dsh-plugin-devin-bridge",
   "version": "0.1.0",
-  "description": "Minimal Hello World plugin template for DeepSeek Harness.",
+  "description": "Devin Connect 反代为 OpenAI Chat Completions 兼容协议的 dsh 插件，服务 glm-5.2 / swe-1.7。",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -25,21 +25,30 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "check": "pnpm run typecheck && pnpm run build",
-    "prepare": "pnpm run build"
+    "prepare": "pnpm run build",
+    "proto:gen": "protoc -I src/proto --es_out=src/proto/gen --es_opt=target=ts src/proto/devin.proto"
   },
   "keywords": [
     "dsh-plugin",
-    "deepseek-harness"
+    "deepseek-harness",
+    "devin",
+    "openai",
+    "proxy"
   ],
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/bugmaker2/dsh-plugin-template.git"
+    "url": "git+https://github.com/Arborsm/dsh-plugin-devin-bridge.git"
   },
-  "bugs": {
-    "url": "https://github.com/bugmaker2/dsh-plugin-template/issues"
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.14.0",
+    "@connectrpc/connect": "^2.1.2",
+    "@connectrpc/connect-node": "^2.1.2",
+    "https-proxy-agent": "^9.1.0",
+    "socks-proxy-agent": "^10.1.0"
   },
-  "homepage": "https://github.com/bugmaker2/dsh-plugin-template",
   "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2.14.0",
+    "@types/node": "^22.20.0",
     "tsdown": "^0.22.14",
     "typescript": "^6.0.3"
   },
