@@ -10,6 +10,14 @@ interface DevinCatalogModel {
   contextWindow?: number;
   maxTokens?: number;
   supportsImages?: boolean;
+  /** 模型系列标签（如 "GLM-5.2", "SWE-1.7"），从 model_family_metadata 提取。 */
+  family?: string;
+  /** 是否需要付费 plan。 */
+  isPremium?: boolean;
+  /** 是否当前处于促销免费期（promo_status.is_active）。 */
+  isFree?: boolean;
+  /** 信用倍率，用于排序和展示。 */
+  creditMultiplier?: number;
 }
 interface DevinConnectionOptions {
   baseUrl: string;
@@ -40,14 +48,21 @@ declare class DevinAdapter extends LlmAdapter {
   resolveModel(_provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
   /**
    * 从 Devin 服务器拉取可用模型列表，供 settings 面板的
-   * "Fetch available models" 按钮调用。返回的模型由用户勾选后
-   * 写入 config.models，listModels 只展示用户配置的模型。
+   * "Fetch available models" 按钮调用。
+   *
+   * 同 family 的多个 effort 变体合并为一个基础模型（取 family default），
+   * effort 走 dsh 的 reasoning effort 滑块控制，插件内部映射到实际 model_uid。
+   * 如 GLM-5.2 family → 只返回 glm-5-2，用户调 effort=high/medium/max/none
+   * 时插件映射到 glm-5-2 / glm-5-2-medium(无) / glm-5-2-max / glm-5-2-none。
    */
   discoverModels(signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
-   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens。
-   * effort/thinking 是 provider 端通过不同 model_uid 实现的，我们这边只管添加模型。
+   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
+   * description / family / effort / isPremium / isFree / creditMultiplier。
+   *
+   * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
+   * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。
    */
   private fetchModelCatalog;
   stream(options: GenerateOptions): AsyncIterable<StreamChunk>;

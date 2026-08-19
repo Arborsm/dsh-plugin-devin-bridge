@@ -16,6 +16,7 @@ import {
   type StreamChunk,
   type ToolSchema,
   type ContentBlock,
+  ReasoningEffortId,
 } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import {
@@ -54,6 +55,14 @@ export interface DevinCatalogModel {
   contextWindow?: number
   maxTokens?: number
   supportsImages?: boolean
+  /** 模型系列标签（如 "GLM-5.2", "SWE-1.7"），从 model_family_metadata 提取。 */
+  family?: string
+  /** 是否需要付费 plan。 */
+  isPremium?: boolean
+  /** 是否当前处于促销免费期（promo_status.is_active）。 */
+  isFree?: boolean
+  /** 信用倍率，用于排序和展示。 */
+  creditMultiplier?: number
 }
 
 export interface DevinConnectionOptions {
@@ -76,6 +85,74 @@ export interface DevinAdapterOptions {
 // ─── DevinAdapter ───────────────────────────────────────────────────────────
 
 const PROVIDER = 'devin'
+
+// ─── Reasoning effort → model_uid 后缀映射 ──────────────────────────────────
+//
+// Devin 的 model_uid 已包含 effort（glm-5-2=High, glm-5-2-max=Max,
+// glm-5-2-none=No Thinking, swe-1-7=Max, swe-1-7-medium=Medium）。
+// 插件对外只暴露基础 model id（glm-5-2, swe-1-7），通过 dsh 的 reasoning
+// effort 滑块（high/medium/max/none）在内部映射到实际 model_uid。
+
+/** dsh effort id → Devin model_uid 后缀。 */
+const EFFORT_SUFFIX: Record<string, string> = {
+  high: '',           // glm-5-2 → glm-5-2 (High)
+  medium: '-medium',  // swe-1-7 → swe-1-7-medium
+  max: '-max',        // glm-5-2 → glm-5-2-max
+  none: '-none',      // glm-5-2 → glm-5-2-none
+}
+
+/** dsh reasoning effort 列表（供 resolveModel 返回给 dsh 显示滑块）。 */
+const REASONING_EFFORTS = [
+  { id: ReasoningEffortId('high'), name: 'High' },
+  { id: ReasoningEffortId('medium'), name: 'Medium' },
+  { id: ReasoningEffortId('max'), name: 'Max' },
+  { id: ReasoningEffortId('none'), name: 'No Thinking' },
+] as const
+
+/**
+ * 把 base model id + reasoningEffort 映射到 Devin 实际 model_uid。
+ * 如 glm-5-2 + max → glm-5-2-max，swe-1-7 + medium → swe-1-7-medium。
+ * 如果映射后的 uid 不在已知模型列表里，回退到 base id。
+ */
+function resolveModelUid(baseId: string, effort: string | undefined, knownIds: Set<string>): string {
+  if (!effort) return baseId
+  const suffix = EFFORT_SUFFIX[effort]
+  if (suffix === undefined) return baseId
+  const mapped = suffix ? `${baseId}${suffix}` : baseId
+  // 只有已知模型才用映射后的 uid，否则回退
+  return knownIds.has(mapped) ? mapped : baseId
+}
+
+/** 从 label 解析 effort 标签（如 "GLM-5.2 High" → "High"）。 */
+function parseEffortFromLabel(label: string): string | undefined {
+  const match = label.match(/\b(Max|High|Medium|Low|No Thinking|Lightning)\b/i)
+  return match?.[0]
+}
+
+/**
+ * 把 model_uid 去掉 effort 后缀，得到 base model id。
+ * 如 glm-5-2-max → glm-5-2, swe-1-7-medium → swe-1-7, glm-5-2-none-1m → glm-5-2。
+ * 去掉 -max, -medium, -none, -1m, -lightning 等后缀。
+ */
+function toBaseModelId(uid: string): string {
+  return uid
+    .replace(/-1m$/i, '')
+    .replace(/-none$/i, '')
+    .replace(/-max$/i, '')
+    .replace(/-medium$/i, '')
+    .replace(/-low$/i, '')
+    .replace(/-lightning$/i, '')
+}
+
+/** 格式化 discovered model 的显示名，带 family/effort/free 标记。 */
+function formatDiscoveredName(m: DevinCatalogModel): string {
+  const parts: string[] = []
+  if (m.name) parts.push(m.name)
+  if (m.isFree) parts.push('[Free]')
+  else if (m.isPremium) parts.push('[Premium]')
+  if (m.creditMultiplier && m.creditMultiplier > 0) parts.push(`(${m.creditMultiplier}x)`)
+  return parts.join(' ')
+}
 
 export class DevinAdapter extends LlmAdapter {
   private readonly config: DevinAdapterOptions
@@ -146,6 +223,12 @@ export class DevinAdapter extends LlmAdapter {
         : { inputModalities: ['text' as const] },
       context: { contextWindow },
       defaultMaxTokens: configured?.maxTokens ?? c.defaultMaxTokens,
+      // 暴露 high/medium/max/none effort 滑块给 dsh；
+      // 插件内部在 stream 时映射到实际 model_uid
+      reasoning: {
+        efforts: REASONING_EFFORTS,
+        defaultEffort: ReasoningEffortId('high'),
+      },
     }
   }
 
@@ -153,14 +236,33 @@ export class DevinAdapter extends LlmAdapter {
 
   /**
    * 从 Devin 服务器拉取可用模型列表，供 settings 面板的
-   * "Fetch available models" 按钮调用。返回的模型由用户勾选后
-   * 写入 config.models，listModels 只展示用户配置的模型。
+   * "Fetch available models" 按钮调用。
+   *
+   * 同 family 的多个 effort 变体合并为一个基础模型（取 family default），
+   * effort 走 dsh 的 reasoning effort 滑块控制，插件内部映射到实际 model_uid。
+   * 如 GLM-5.2 family → 只返回 glm-5-2，用户调 effort=high/medium/max/none
+   * 时插件映射到 glm-5-2 / glm-5-2-medium(无) / glm-5-2-max / glm-5-2-none。
    */
   async discoverModels(signal?: AbortSignal): Promise<LlmDiscoveredModel[]> {
     const dynamic = await this.fetchModelCatalog(signal)
-    return dynamic.map((m) => ({
-      id: m.id,
-      ...m.name ? { name: m.name } : {},
+    // 按 family 分组，每个 family 只留 isDefault 的那个（或第一个）
+    const byFamily = new Map<string, DevinCatalogModel>()
+    for (const m of dynamic) {
+      const fam = m.family ?? m.id
+      const existing = byFamily.get(fam)
+      if (!existing) {
+        byFamily.set(fam, m)
+        continue
+      }
+      // 优先选 isFree 的（promo 免费期）
+      if (m.isFree && !existing.isFree) {
+        byFamily.set(fam, m)
+      }
+    }
+    return [...byFamily.values()].map((m) => ({
+      // id 用 base id：去掉 effort 后缀（-max, -medium, -none, -1m 等）
+      id: toBaseModelId(m.id),
+      name: formatDiscoveredName(m),
       ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
       ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
     }))
@@ -170,8 +272,11 @@ export class DevinAdapter extends LlmAdapter {
 
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
-   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens。
-   * effort/thinking 是 provider 端通过不同 model_uid 实现的，我们这边只管添加模型。
+   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
+   * description / family / effort / isPremium / isFree / creditMultiplier。
+   *
+   * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
+   * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。
    */
   private async fetchModelCatalog(signal?: AbortSignal): Promise<DevinCatalogModel[]> {
     const c = this.conn()
@@ -194,12 +299,20 @@ export class DevinAdapter extends LlmAdapter {
       const uid = config.modelUid
       if (!uid || seen.has(uid)) continue
       seen.add(uid)
+      const family = config.modelFamilyMetadata?.modelFamilyLabel || undefined
+      const effort = parseEffortFromLabel(config.label)
+      const isFree = config.promoStatus?.isActive === true
       models.push({
         id: uid,
         ...config.label ? { name: config.label } : {},
         ...config.description ? { description: config.description } : {},
         ...config.maxTokens > 0 ? { contextWindow: config.maxTokens, maxTokens: config.maxTokens } : {},
         supportsImages: config.supportsImages,
+        ...family ? { family } : {},
+        ...effort ? { effort } : {},
+        isPremium: config.isPremium,
+        ...isFree ? { isFree: true } : {},
+        ...config.creditMultiplier > 0 ? { creditMultiplier: config.creditMultiplier } : {},
       })
     }
     return models
@@ -274,10 +387,15 @@ export class DevinAdapter extends LlmAdapter {
       f: fingerprint,
     })
 
+    // 把 base model id + reasoningEffort 映射到 Devin 实际 model_uid
+    const knownIds = new Set(c.models.map((m) => m.id))
+    const effortId = options.reasoningEffort as unknown as string | undefined
+    const actualModelUid = resolveModelUid(options.model, effortId, knownIds)
+
     const result = create(GetChatMessageRequestSchema, {
       metadata,
       prompt: sanitizeSystemPrompt(withToolDescriptions(options.system ?? '', options.tools)),
-      chatModelUid: options.model,
+      chatModelUid: actualModelUid,
       requestType: ChatMessageRequestType.CASCADE,
       configuration: create(ExaCodeiumCommonPb_CompletionConfigurationSchema, {
         numCompletions: 1n,
