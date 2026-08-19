@@ -29,6 +29,11 @@ interface DevinBridgeConfig {
     contextWindow?: number
     maxTokens?: number
     supportsImages?: boolean
+    family?: string
+    effort?: string
+    isPremium?: boolean
+    isFree?: boolean
+    creditMultiplier?: number
   }>
 }
 
@@ -286,11 +291,27 @@ function ModelManager({
     for (const candidate of candidates) {
       if (!picked.has(candidate.id)) continue
       if (!byId.has(candidate.id)) {
+        // 从 discovered name 解析原始 label 和 family/effort
+        const rawLabel = candidate.name?.replace(/\s*\[(?:Free|Premium)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim() ?? candidate.id
+        const effortMatch = rawLabel.match(/\b(Max|High|Medium|Low|No Thinking|Lightning)\b/i)
+        const effort = effortMatch?.[0]
+        let family = rawLabel
+        if (effort) family = rawLabel.replace(new RegExp(`\\s*${effort}\\s*`, 'i'), '').trim()
+        if (family.includes('Lightning')) family = family.replace(/\s*Lightning\s*/i, '').trim()
+        const isFree = candidate.name?.includes('[Free]') ?? false
+        const isPremium = candidate.name?.includes('[Premium]') ?? false
+        const multMatch = candidate.name?.match(/\(([\d.]+)x\)/)
+        const creditMultiplier = multMatch ? Number(multMatch[1]) : undefined
         byId.set(candidate.id, {
           id: candidate.id,
-          ...candidate.name ? { name: candidate.name } : {},
+          ...rawLabel ? { name: rawLabel } : {},
           ...candidate.contextWindow ? { contextWindow: candidate.contextWindow } : {},
           ...candidate.maxTokens ? { maxTokens: candidate.maxTokens } : {},
+          ...family ? { family } : {},
+          ...effort ? { effort } : {},
+          ...isFree ? { isFree: true } : {},
+          ...isPremium ? { isPremium: true } : {},
+          ...creditMultiplier ? { creditMultiplier } : {},
         })
       }
     }
@@ -433,6 +454,9 @@ function ModelManager({
               <div className="devin-bridge-model-item">
                 <span className="devin-bridge-model-id">{model.id}</span>
                 {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
+                {model.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-free">Free</span>}
+                {model.isPremium && !model.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
+                {model.effort && <span className="devin-bridge-model-tag">{model.effort}</span>}
                 {model.supportsImages && <span className="devin-bridge-model-tag">vision</span>}
                 {model.contextWindow && (
                   <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
@@ -491,6 +515,11 @@ function ModelEditor({
     contextWindow: model.contextWindow?.toString() ?? '',
     maxTokens: model.maxTokens?.toString() ?? '',
     supportsImages: model.supportsImages ?? false,
+    family: model.family ?? '',
+    effort: model.effort ?? '',
+    isPremium: model.isPremium ?? false,
+    isFree: model.isFree ?? false,
+    creditMultiplier: model.creditMultiplier?.toString() ?? '',
   })
 
   const handleSave = async () => {
@@ -501,6 +530,11 @@ function ModelEditor({
       ...draft.contextWindow.trim() ? { contextWindow: Number(draft.contextWindow) } : {},
       ...draft.maxTokens.trim() ? { maxTokens: Number(draft.maxTokens) } : {},
       ...draft.supportsImages ? { supportsImages: true } : {},
+      ...draft.family.trim() ? { family: draft.family.trim() } : {},
+      ...draft.effort.trim() ? { effort: draft.effort.trim() } : {},
+      ...draft.isPremium ? { isPremium: true } : {},
+      ...draft.isFree ? { isFree: true } : {},
+      ...draft.creditMultiplier.trim() ? { creditMultiplier: Number(draft.creditMultiplier) } : {},
     }
     await onSave(updated)
     onClose()
@@ -571,6 +605,65 @@ function ModelEditor({
         />
         <span className="devin-bridge-field-label">Supports Images</span>
       </label>
+      <div className="devin-bridge-editor-row">
+        <div className="devin-bridge-field">
+          <span className="devin-bridge-field-label">Family</span>
+          <input
+            className="devin-bridge-input"
+            type="text"
+            value={draft.family}
+            placeholder="GLM-5.2"
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, family: e.target.value })}
+          />
+        </div>
+        <div className="devin-bridge-field">
+          <span className="devin-bridge-field-label">Effort</span>
+          <input
+            className="devin-bridge-input"
+            type="text"
+            value={draft.effort}
+            placeholder="High"
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, effort: e.target.value })}
+          />
+        </div>
+      </div>
+      <div className="devin-bridge-editor-row">
+        <div className="devin-bridge-field">
+          <span className="devin-bridge-field-label">Credit Multiplier</span>
+          <input
+            className="devin-bridge-input"
+            type="number"
+            value={draft.creditMultiplier}
+            placeholder="1.5"
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, creditMultiplier: e.target.value })}
+          />
+        </div>
+      </div>
+      <div className="devin-bridge-editor-row">
+        <label className="devin-bridge-checkbox-label">
+          <input
+            type="checkbox"
+            className="devin-bridge-checkbox"
+            checked={draft.isFree}
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, isFree: e.target.checked })}
+          />
+          <span className="devin-bridge-field-label">Free (promo)</span>
+        </label>
+        <label className="devin-bridge-checkbox-label">
+          <input
+            type="checkbox"
+            className="devin-bridge-checkbox"
+            checked={draft.isPremium}
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, isPremium: e.target.checked })}
+          />
+          <span className="devin-bridge-field-label">Premium</span>
+        </label>
+      </div>
       <div className="devin-bridge-model-actions">
         <button
           type="button"
@@ -885,6 +978,14 @@ const STYLES = (
       color: var(--dsw-alias-label-secondary);
       font-size: 11px;
       padding: 1px 6px;
+    }
+    .devin-bridge-tag-free {
+      border-color: var(--dsw-alias-state-success-primary, #22c55e);
+      color: var(--dsw-alias-state-success-primary, #22c55e);
+    }
+    .devin-bridge-tag-premium {
+      border-color: var(--dsw-alias-state-warn-label, #f59e0b);
+      color: var(--dsw-alias-state-warn-label, #f59e0b);
     }
     .devin-bridge-model-edit {
       background: none;

@@ -94,6 +94,17 @@ message ExaCodeiumCommonPb_ModelUsageStats {
 
 // ─── Client model config (model list response) ──────────────────────────────
 
+message ExaCodeiumCommonPb_PromoStatus {
+  optional bool is_active = 1;
+  optional GoogleProtobuf_Timestamp end_date = 2;
+  optional string label = 3;
+}
+
+message ExaCodeiumCommonPb_ModelFamilyMetadata {
+  optional string model_family_label = 1;
+  optional bool is_default_model_in_family = 3;
+}
+
 message ExaCodeiumCommonPb_ClientModelConfig {
   optional string label = 1;
   optional bool disabled = 4;
@@ -101,9 +112,15 @@ message ExaCodeiumCommonPb_ClientModelConfig {
   optional bool is_premium = 7;
   optional bool is_beta = 9;
   optional ExaCodeiumCommonPb_ModelProvider provider = 10;
+  optional bool is_recommended = 11;
+  optional bool is_new = 15;
+  optional bool is_capacity_limited = 20;
   optional int32 max_tokens = 18;
   optional string model_uid = 22;
   optional string description = 27;
+  optional float credit_multiplier = 3;
+  optional ExaCodeiumCommonPb_PromoStatus promo_status = 19;
+  optional ExaCodeiumCommonPb_ModelFamilyMetadata model_family_metadata = 30;
 }
 
 // ─── Request / Response messages ────────────────────────────────────────────
