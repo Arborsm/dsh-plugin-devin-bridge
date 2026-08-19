@@ -3,13 +3,14 @@
  *
  * 在 Plugins 设置页面注册 `settings.plugin.item` slot card，
  * 让用户通过 UI 配置 token、baseUrl、proxy 和模型列表，
- * 而不是手动编辑 settings.yaml。
+ * 包括从 Devin 服务器动态拉取可用模型。
  */
 
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy/client'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import { DevinBridgeCard, type DevinBridgeCardProps } from './DevinBridgeCard.tsx'
 
@@ -34,8 +35,8 @@ interface DevinBridgeConfig {
   }>
 }
 
-/** Required services: slot registry + settings scope binder。 */
-export const inject = ['slots', 'settingsScope']
+/** Required services: slot registry + settings scope binder + connection (for llm.discoverModels)。 */
+export const inject = ['slots', 'settingsScope', 'connection']
 
 /**
  * 注册 Devin Bridge 配置卡片到 Plugins 设置页面。
@@ -43,13 +44,15 @@ export const inject = ['slots', 'settingsScope']
  */
 export function apply(ctx: ClientContext): void {
   const scope = ctx.settingsScope.bind<DevinBridgeConfig>({ namespace: SETTINGS_NS })
+  // ctx.get('connection') 返回 ConnectionHandle，其 .api 是 IApiClient
+  const api = (ctx as unknown as { get(key: 'connection'): { api: IApiClient } }).get('connection').api
 
   ctx.slots.inject('settings.plugin.item', function* () {
     yield ctx.slots.register(
       {
         name: 'settings.plugin.item',
         key: SETTINGS_NS,
-        inject: (): DevinBridgeCardProps => ({ scope }),
+        inject: (): DevinBridgeCardProps => ({ scope, api }),
       },
       DevinBridgeCard,
     )

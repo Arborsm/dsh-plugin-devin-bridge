@@ -3,10 +3,15 @@
  *
  * 在 Plugins 设置页面渲染，让用户编辑 token、baseUrl、proxy
  * 和模型列表。通过 settings scope 读写 host 端的 namespace。
+ * 模型管理支持：
+ * - 从 Devin 服务器动态拉取可用模型（Fetch available models）
+ * - 手动添加模型
+ * - 删除已配置模型
  */
 
 import { useSyncExternalStore, useState, useCallback, type ReactNode } from 'react'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy/client'
 
 /** 插件配置类型。 */
 interface DevinBridgeConfig {
@@ -26,9 +31,18 @@ interface DevinBridgeConfig {
   }>
 }
 
+/** 从 discoverModels 返回的候选模型。 */
+interface DiscoveredModel {
+  id: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+}
+
 /** card 组件接收的 props（由 slot inject 注入）。 */
 export interface DevinBridgeCardProps {
   scope: SettingsScope<DevinBridgeConfig>
+  api: IApiClient
 }
 
 /** 字段元数据。 */
@@ -49,12 +63,14 @@ const FIELDS: readonly FieldDef[] = [
   { key: 'defaultMaxTokens', label: 'Default Max Tokens', hint: 'Fallback max output tokens.', type: 'number', placeholder: '16384' },
 ]
 
+const SETTINGS_NS = 'dsh-plugin-devin-bridge'
+
 /**
  * 渲染 Devin Bridge 配置卡片。
- * @param props - settings scope 注入的 props。
+ * @param props - settings scope 和 api 注入的 props。
  * @returns 配置表单。
  */
-export function DevinBridgeCard({ scope }: DevinBridgeCardProps): ReactNode {
+export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode {
   const snapshot = useSyncExternalStore(
     (listener) => scope.subscribe(listener),
     () => scope.getSnapshot(),
@@ -89,12 +105,31 @@ export function DevinBridgeCard({ scope }: DevinBridgeCardProps): ReactNode {
     [scope, snapshot.writable],
   )
 
+  const handleSaveModels = useCallback(
+    async (models: DevinBridgeConfig['models']) => {
+      await handleSaveField('models', models)
+    },
+    [handleSaveField],
+  )
+
   if (loading) {
-    return <li className="devin-bridge-card"><div className="devin-bridge-card-header">Devin Bridge</div><p className="devin-bridge-hint">Loading…</p></li>
+    return (
+      <li className="devin-bridge-card">
+        <div className="devin-bridge-card-header">Devin Bridge</div>
+        <p className="devin-bridge-hint">Loading…</p>
+        {STYLES}
+      </li>
+    )
   }
 
   if (snapshot.status === 'unavailable') {
-    return <li className="devin-bridge-card"><div className="devin-bridge-card-header">Devin Bridge</div><p className="devin-bridge-hint">Settings unavailable (running in memory mode).</p></li>
+    return (
+      <li className="devin-bridge-card">
+        <div className="devin-bridge-card-header">Devin Bridge</div>
+        <p className="devin-bridge-hint">Settings unavailable (running in memory mode).</p>
+        {STYLES}
+      </li>
+    )
   }
 
   return (
@@ -126,191 +161,243 @@ export function DevinBridgeCard({ scope }: DevinBridgeCardProps): ReactNode {
             />
           ))}
 
-          {/* 模型列表 */}
-          <div className="devin-bridge-field">
-            <span className="devin-bridge-field-label">Models</span>
-            <p className="devin-bridge-field-hint">
-              Models shown in the selector. Use the Models settings page "Fetch available models"
-              button to discover Devin's full catalog.
-            </p>
-            {value?.models && value.models.length > 0 ? (
-              <ul className="devin-bridge-model-list">
-                {value.models.map((model, index) => (
-                  <li key={model.id + index} className="devin-bridge-model-item">
-                    <span className="devin-bridge-model-id">{model.id}</span>
-                    {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
-                    {model.supportsImages && <span className="devin-bridge-model-tag">vision</span>}
-                    <button
-                      type="button"
-                      className="devin-bridge-model-remove"
-                      disabled={disabled}
-                      onClick={() => {
-                        const next = value.models.filter((_, i) => i !== index)
-                        handleSaveField('models', next)
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="devin-bridge-hint">No models configured. Defaults will be used.</p>
-            )}
-          </div>
+          {/* 模型管理 */}
+          <ModelManager
+            models={value?.models ?? []}
+            disabled={disabled}
+            api={api}
+            onSave={handleSaveModels}
+            onError={setError}
+          />
 
           {error && <p className="devin-bridge-error" role="status">{error}</p>}
           {saving && <p className="devin-bridge-hint">Saving…</p>}
         </div>
       )}
 
-      <style>{`
-        .devin-bridge-card {
-          border: 1px solid var(--dsw-alias-border-l2);
-          border-radius: 12px;
-          flex-direction: column;
-          gap: 12px;
-          padding: 12px 14px;
-          display: flex;
-          list-style: none;
-        }
-        .devin-bridge-card-header {
-          align-items: center;
-          gap: 10px;
-          width: 100%;
-          background: none;
-          border: none;
-          cursor: pointer;
-          display: flex;
-          font: inherit;
-          padding: 0;
-          text-align: left;
-        }
-        .devin-bridge-card-title {
-          color: var(--dsw-alias-label-primary);
-          font-size: 14px;
-          font-weight: 500;
-        }
-        .devin-bridge-card-desc {
-          color: var(--dsw-alias-label-tertiary);
-          font-size: 13px;
-          flex: 1;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .devin-bridge-chevron {
-          color: var(--dsw-alias-label-secondary);
-          font-size: 12px;
-        }
-        .devin-bridge-card-body {
-          flex-direction: column;
-          gap: 12px;
-          display: flex;
-        }
-        .devin-bridge-field {
-          flex-direction: column;
-          gap: 4px;
-          display: flex;
-        }
-        .devin-bridge-field-label {
-          color: var(--dsw-alias-label-secondary);
-          font-size: 13px;
-        }
-        .devin-bridge-field-hint {
-          color: var(--dsw-alias-label-tertiary);
-          font-size: 12px;
-          line-height: 18px;
-          margin: 0;
-        }
-        .devin-bridge-input {
-          border: 1px solid var(--dsw-alias-border-l2);
-          background: var(--dsw-alias-bg-base);
-          color: var(--dsw-alias-label-primary);
-          border-radius: 8px;
-          padding: 6px 10px;
-          font: inherit;
-          font-size: 14px;
-          width: 100%;
-          box-sizing: border-box;
-        }
-        .devin-bridge-input:focus {
-          outline: 2px solid var(--dsw-alias-state-business-primary);
-          outline-offset: 1px;
-        }
-        .devin-bridge-input:disabled {
-          opacity: 0.5;
-        }
-        .devin-bridge-checkbox {
-          width: 16px;
-          height: 16px;
-        }
-        .devin-bridge-readonly {
-          color: var(--dsw-alias-state-warn-label);
-          font-size: 12px;
-          margin: 0;
-        }
-        .devin-bridge-hint {
-          color: var(--dsw-alias-label-tertiary);
-          font-size: 13px;
-          margin: 0;
-        }
-        .devin-bridge-error {
-          color: var(--dsw-alias-state-error-primary);
-          font-size: 12px;
-          margin: 0;
-        }
-        .devin-bridge-model-list {
-          flex-direction: column;
-          gap: 6px;
-          margin: 0;
-          padding: 0;
-          list-style: none;
-          display: flex;
-        }
-        .devin-bridge-model-item {
-          align-items: center;
-          gap: 8px;
-          border: 1px solid var(--dsw-alias-border-l1);
-          border-radius: 8px;
-          padding: 6px 10px;
-          display: flex;
-          font-size: 13px;
-        }
-        .devin-bridge-model-id {
-          color: var(--dsw-alias-label-primary);
-          font-weight: 500;
-        }
-        .devin-bridge-model-name {
-          color: var(--dsw-alias-label-secondary);
-        }
-        .devin-bridge-model-tag {
-          border: 1px solid var(--dsw-alias-border-l3);
-          border-radius: 4px;
-          color: var(--dsw-alias-label-secondary);
-          font-size: 11px;
-          padding: 1px 6px;
-        }
-        .devin-bridge-model-remove {
-          background: none;
-          border: 1px solid var(--dsw-alias-border-l2);
-          border-radius: 6px;
-          color: var(--dsw-alias-label-secondary);
-          cursor: pointer;
-          font: inherit;
-          font-size: 12px;
-          margin-left: auto;
-          padding: 2px 8px;
-        }
-        .devin-bridge-model-remove:hover:not(:disabled) {
-          background: var(--dsw-alias-interactive-bg-hover-solid);
-          color: var(--dsw-alias-label-primary);
-        }
-        .devin-bridge-model-remove:disabled {
-          opacity: 0.5;
-        }
-      `}</style>
+      {STYLES}
     </li>
+  )
+}
+
+/** 模型管理组件：fetch + 手动添加 + 列表 + 删除。 */
+function ModelManager({
+  models,
+  disabled,
+  api,
+  onSave,
+  onError,
+}: {
+  models: DevinBridgeConfig['models']
+  disabled: boolean
+  api: IApiClient
+  onSave: (models: DevinBridgeConfig['models']) => Promise<void>
+  onError: (msg: string | null) => void
+}): ReactNode {
+  const [fetching, setFetching] = useState(false)
+  const [candidates, setCandidates] = useState<DiscoveredModel[] | null>(null)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [showAddManual, setShowAddManual] = useState(false)
+  const [manualId, setManualId] = useState('')
+  const [manualName, setManualName] = useState('')
+
+  const handleFetch = async () => {
+    setFetching(true)
+    onError(null)
+    try {
+      const response = await api.llm.discoverModels({ settingsNs: SETTINGS_NS })
+      if (!response.result.ok) {
+        onError(response.result.error.message)
+        return
+      }
+      const found = response.result.value.models
+      if (found.length === 0) {
+        onError('The provider listed no models.')
+        return
+      }
+      const known = new Set(models.map((m) => m.id))
+      setCandidates(found)
+      setPicked(new Set(found.filter((m) => !known.has(m.id)).map((m) => m.id)))
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  const togglePick = (id: string) => {
+    setPicked((current) => {
+      const next = new Set(current)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }
+
+  const adoptPicked = async () => {
+    if (candidates === null) return
+    const byId = new Map(models.map((m) => [m.id, m]))
+    for (const candidate of candidates) {
+      if (!picked.has(candidate.id)) continue
+      if (!byId.has(candidate.id)) {
+        byId.set(candidate.id, {
+          id: candidate.id,
+          ...candidate.name ? { name: candidate.name } : {},
+          ...candidate.contextWindow ? { contextWindow: candidate.contextWindow } : {},
+          ...candidate.maxTokens ? { maxTokens: candidate.maxTokens } : {},
+        })
+      }
+    }
+    await onSave([...byId.values()])
+    setCandidates(null)
+    setPicked(new Set())
+  }
+
+  const handleAddManual = async () => {
+    const id = manualId.trim()
+    if (!id) return
+    if (models.some((m) => m.id === id)) {
+      onError(`Model "${id}" already exists.`)
+      return
+    }
+    await onSave([...models, { id, ...manualName.trim() ? { name: manualName.trim() } : {} }])
+    setManualId('')
+    setManualName('')
+    setShowAddManual(false)
+  }
+
+  const handleRemove = async (index: number) => {
+    await onSave(models.filter((_, i) => i !== index))
+  }
+
+  return (
+    <div className="devin-bridge-field">
+      <span className="devin-bridge-field-label">Models</span>
+      <p className="devin-bridge-field-hint">
+        Models shown in the selector. Fetch from Devin to discover available models,
+        or add manually by id.
+      </p>
+
+      {/* 操作按钮 */}
+      <div className="devin-bridge-model-actions">
+        <button
+          type="button"
+          className="devin-bridge-btn"
+          disabled={disabled || fetching}
+          onClick={handleFetch}
+        >
+          {fetching ? 'Fetching…' : 'Fetch available models'}
+        </button>
+        <button
+          type="button"
+          className="devin-bridge-btn devin-bridge-btn-secondary"
+          disabled={disabled}
+          onClick={() => setShowAddManual(!showAddManual)}
+        >
+          {showAddManual ? 'Cancel' : 'Add manually'}
+        </button>
+      </div>
+
+      {/* 手动添加表单 */}
+      {showAddManual && (
+        <div className="devin-bridge-manual-add">
+          <input
+            className="devin-bridge-input"
+            type="text"
+            placeholder="Model id (e.g. glm-5-2)"
+            value={manualId}
+            onChange={(e) => setManualId(e.target.value)}
+            disabled={disabled}
+          />
+          <input
+            className="devin-bridge-input"
+            type="text"
+            placeholder="Display name (optional)"
+            value={manualName}
+            onChange={(e) => setManualName(e.target.value)}
+            disabled={disabled}
+          />
+          <button
+            type="button"
+            className="devin-bridge-btn"
+            disabled={disabled || !manualId.trim()}
+            onClick={handleAddManual}
+          >
+            Add
+          </button>
+        </div>
+      )}
+
+      {/* Fetch 候选列表 */}
+      {candidates !== null && (
+        <div className="devin-bridge-fetch-picker">
+          <p className="devin-bridge-field-hint">
+            Choose models to add ({candidates.length} available, {picked.size} selected):
+          </p>
+          <ul className="devin-bridge-candidate-list">
+            {candidates.map((model) => (
+              <li key={model.id} className="devin-bridge-candidate-item">
+                <label className="devin-bridge-candidate-label">
+                  <input
+                    type="checkbox"
+                    className="devin-bridge-checkbox"
+                    checked={picked.has(model.id)}
+                    onChange={() => togglePick(model.id)}
+                  />
+                  <span className="devin-bridge-model-id">{model.id}</span>
+                  {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
+                  {model.contextWindow && (
+                    <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
+                  )}
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="devin-bridge-model-actions">
+            <button
+              type="button"
+              className="devin-bridge-btn"
+              disabled={disabled || picked.size === 0}
+              onClick={adoptPicked}
+            >
+              Add selected ({picked.size})
+            </button>
+            <button
+              type="button"
+              className="devin-bridge-btn devin-bridge-btn-secondary"
+              onClick={() => { setCandidates(null); setPicked(new Set()) }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 已配置模型列表 */}
+      {models.length > 0 ? (
+        <ul className="devin-bridge-model-list">
+          {models.map((model, index) => (
+            <li key={model.id + index} className="devin-bridge-model-item">
+              <span className="devin-bridge-model-id">{model.id}</span>
+              {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
+              {model.supportsImages && <span className="devin-bridge-model-tag">vision</span>}
+              {model.contextWindow && (
+                <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
+              )}
+              <button
+                type="button"
+                className="devin-bridge-model-remove"
+                disabled={disabled}
+                onClick={() => handleRemove(index)}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="devin-bridge-hint">No models configured. Defaults will be used.</p>
+      )}
+    </div>
   )
 }
 
@@ -327,12 +414,6 @@ function FieldRow({
   onSave: (field: string, value: unknown) => void
 }): ReactNode {
   const [draft, setDraft] = useState(() => formatValue(value, def.type))
-
-  // 当 host 端值变化时同步 draft
-  const current = formatValue(value, def.type)
-  if (draft !== current && draft === formatValue(value, def.type)) {
-    // no-op, draft already in sync
-  }
 
   const handleBlur = () => {
     if (def.type === 'checkbox') return
@@ -352,7 +433,7 @@ function FieldRow({
   if (def.type === 'checkbox') {
     return (
       <div className="devin-bridge-field">
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+        <label className="devin-bridge-checkbox-label">
           <input
             type="checkbox"
             className="devin-bridge-checkbox"
@@ -392,3 +473,224 @@ function formatValue(value: unknown, type: FieldDef['type']): string {
   if (typeof value === 'string') return value
   return ''
 }
+
+/** 内联样式。 */
+const STYLES = (
+  <style>{`
+    .devin-bridge-card {
+      border: 1px solid var(--dsw-alias-border-l2);
+      border-radius: 12px;
+      flex-direction: column;
+      gap: 12px;
+      padding: 12px 14px;
+      display: flex;
+      list-style: none;
+    }
+    .devin-bridge-card-header {
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      background: none;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      font: inherit;
+      padding: 0;
+      text-align: left;
+    }
+    .devin-bridge-card-title {
+      color: var(--dsw-alias-label-primary);
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .devin-bridge-card-desc {
+      color: var(--dsw-alias-label-tertiary);
+      font-size: 13px;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .devin-bridge-chevron {
+      color: var(--dsw-alias-label-secondary);
+      font-size: 12px;
+    }
+    .devin-bridge-card-body {
+      flex-direction: column;
+      gap: 12px;
+      display: flex;
+    }
+    .devin-bridge-field {
+      flex-direction: column;
+      gap: 4px;
+      display: flex;
+    }
+    .devin-bridge-field-label {
+      color: var(--dsw-alias-label-secondary);
+      font-size: 13px;
+    }
+    .devin-bridge-field-hint {
+      color: var(--dsw-alias-label-tertiary);
+      font-size: 12px;
+      line-height: 18px;
+      margin: 0;
+    }
+    .devin-bridge-input {
+      border: 1px solid var(--dsw-alias-border-l2);
+      background: var(--dsw-alias-bg-base);
+      color: var(--dsw-alias-label-primary);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 14px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .devin-bridge-input:focus {
+      outline: 2px solid var(--dsw-alias-state-business-primary);
+      outline-offset: 1px;
+    }
+    .devin-bridge-input:disabled {
+      opacity: 0.5;
+    }
+    .devin-bridge-checkbox {
+      width: 16px;
+      height: 16px;
+    }
+    .devin-bridge-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .devin-bridge-readonly {
+      color: var(--dsw-alias-state-warn-label);
+      font-size: 12px;
+      margin: 0;
+    }
+    .devin-bridge-hint {
+      color: var(--dsw-alias-label-tertiary);
+      font-size: 13px;
+      margin: 0;
+    }
+    .devin-bridge-error {
+      color: var(--dsw-alias-state-error-primary);
+      font-size: 12px;
+      margin: 0;
+    }
+    .devin-bridge-model-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .devin-bridge-btn {
+      background: var(--dsw-alias-button-primary-fill);
+      color: var(--dsw-alias-label-primary-foreground);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      padding: 6px 12px;
+    }
+    .devin-bridge-btn:hover:not(:disabled) {
+      opacity: 0.9;
+    }
+    .devin-bridge-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .devin-bridge-btn-secondary {
+      background: var(--dsw-alias-bg-base);
+      color: var(--dsw-alias-label-primary);
+      border: 1px solid var(--dsw-alias-border-l2);
+    }
+    .devin-bridge-manual-add {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .devin-bridge-manual-add .devin-bridge-input {
+      flex: 1;
+      min-width: 120px;
+    }
+    .devin-bridge-fetch-picker {
+      border: 1px solid var(--dsw-alias-border-l2);
+      border-radius: 8px;
+      padding: 10px;
+      flex-direction: column;
+      gap: 8px;
+      display: flex;
+    }
+    .devin-bridge-candidate-list {
+      flex-direction: column;
+      gap: 4px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .devin-bridge-candidate-item {
+      border: 1px solid var(--dsw-alias-border-l1);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+    .devin-bridge-candidate-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .devin-bridge-model-list {
+      flex-direction: column;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+    }
+    .devin-bridge-model-item {
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--dsw-alias-border-l1);
+      border-radius: 8px;
+      padding: 6px 10px;
+      display: flex;
+      font-size: 13px;
+    }
+    .devin-bridge-model-id {
+      color: var(--dsw-alias-label-primary);
+      font-weight: 500;
+    }
+    .devin-bridge-model-name {
+      color: var(--dsw-alias-label-secondary);
+    }
+    .devin-bridge-model-tag {
+      border: 1px solid var(--dsw-alias-border-l3);
+      border-radius: 4px;
+      color: var(--dsw-alias-label-secondary);
+      font-size: 11px;
+      padding: 1px 6px;
+    }
+    .devin-bridge-model-remove {
+      background: none;
+      border: 1px solid var(--dsw-alias-border-l2);
+      border-radius: 6px;
+      color: var(--dsw-alias-label-secondary);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      margin-left: auto;
+      padding: 2px 8px;
+    }
+    .devin-bridge-model-remove:hover:not(:disabled) {
+      background: var(--dsw-alias-interactive-bg-hover-solid);
+      color: var(--dsw-alias-label-primary);
+    }
+    .devin-bridge-model-remove:disabled {
+      opacity: 0.5;
+    }
+  `}</style>
+)
