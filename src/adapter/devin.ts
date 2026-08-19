@@ -25,6 +25,7 @@ import {
   ExaChatPb_ChatMessagePromptSchema,
   ExaChatPb_ChatToolDefinitionSchema,
   ExaCodeiumCommonPb_ChatMessageSource,
+  ExaCodeiumCommonPb_ChatToolCallSchema,
   ExaCodeiumCommonPb_CompletionConfigurationSchema,
   ExaCodeiumCommonPb_ConversationalPlannerMode,
   ExaCodeiumCommonPb_MetadataSchema,
@@ -480,11 +481,11 @@ export class DevinAdapter extends LlmAdapter {
       )
       for (const block of message.content) {
         if (block.type === 'tool-call') {
-          prompt.toolCalls.push({
+          prompt.toolCalls.push(create(ExaCodeiumCommonPb_ChatToolCallSchema, {
             id: block.id,
             name: block.name,
             argumentsJson: block.arguments,
-          } as never)
+          }))
         }
       }
       return [prompt]
