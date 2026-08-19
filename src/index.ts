@@ -52,8 +52,7 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
     maxTokens: 262_000,
     supportsImages: true,
     family: 'SWE-1.7',
-    isFree: true,
-    creditMultiplier: 3,
+    creditMultiplier: 9,
   },
 ]
 
