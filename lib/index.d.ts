@@ -1,5 +1,5 @@
 import z from "@deepseek-ai/schemastery";
-import { GenerateOptions, LlmAdapter, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, RetryPolicyConfig, StreamChunk } from "@deepseek-ai/dsh-llm";
+import { GenerateOptions, LlmAdapter, LlmDiscoveredModel, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, RetryPolicyConfig, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { Context } from "@deepseek-ai/cordis";
 import { ImageAttachmentRef, StoredImageAttachment } from "@deepseek-ai/dsh-attachment";
 //#region src/adapter/devin.d.ts
@@ -30,9 +30,6 @@ declare class DevinAdapter extends LlmAdapter {
   private readonly config;
   private cachedClient;
   private cachedClientKey;
-  private cachedModels;
-  private modelsExpiry;
-  private static readonly MODELS_CACHE_TTL_MS;
   constructor(options: DevinAdapterOptions);
   /** 当前连接配置（每次调用读取最新值）。 */
   private conn;
@@ -42,13 +39,11 @@ declare class DevinAdapter extends LlmAdapter {
   listModels(_provider: string): Promise<readonly LlmModelInfo[]>;
   resolveModel(_provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
   /**
-   * 解析当前可用的模型目录。
-   *
-   * 优先从 Devin 服务器动态获取（GetCascadeModelConfigs），带 5 分钟 TTL 缓存；
-   * 网络失败时 fallback 到配置的静态模型列表。
-   * 用户显式配置的 model 即使不在服务器返回的列表中也会被合并进来。
+   * 从 Devin 服务器拉取可用模型列表，供 settings 面板的
+   * "Fetch available models" 按钮调用。返回的模型由用户勾选后
+   * 写入 config.models，listModels 只展示用户配置的模型。
    */
-  private resolveModelCatalog;
+  discoverModels(signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens / description。

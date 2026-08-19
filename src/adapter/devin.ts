@@ -8,6 +8,7 @@ import {
   LlmAdapter,
   LlmError,
   type GenerateOptions,
+  type LlmDiscoveredModel,
   type LlmModelInfo,
   type LlmProviderInfo,
   type LlmResolvedModelInfo,
@@ -89,10 +90,6 @@ export class DevinAdapter extends LlmAdapter {
   // transport/client 缓存：配置变更时重建
   private cachedClient: ReturnType<typeof createClient<typeof ApiServerService>> | null = null
   private cachedClientKey = ''
-  // 动态模型目录缓存（5 分钟 TTL，与原始 devin-2api 一致）
-  private cachedModels: readonly DevinCatalogModel[] | null = null
-  private modelsExpiry = 0
-  private static readonly MODELS_CACHE_TTL_MS = 5 * 60 * 1000
 
   constructor(options: DevinAdapterOptions) {
     super()
@@ -119,9 +116,6 @@ export class DevinAdapter extends LlmAdapter {
     })
     this.cachedClient = createClient(ApiServerService, transport)
     this.cachedClientKey = key
-    // 连接事实变了，模型目录缓存失效
-    this.cachedModels = null
-    this.modelsExpiry = 0
     return this.cachedClient
   }
 
@@ -130,8 +124,8 @@ export class DevinAdapter extends LlmAdapter {
   }
 
   override async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    const catalog = await this.resolveModelCatalog()
-    const models: LlmModelInfo[] = catalog.map((m) => ({
+    const c = this.conn()
+    return c.models.map((m) => ({
       provider: PROVIDER,
       id: m.id,
       name: m.name ?? m.id,
@@ -140,7 +134,6 @@ export class DevinAdapter extends LlmAdapter {
         ? { inputModalities: ['text' as const, 'image' as const] }
         : { inputModalities: ['text' as const] },
     }))
-    return models
   }
 
   override async resolveModel(
@@ -149,8 +142,7 @@ export class DevinAdapter extends LlmAdapter {
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
     const c = this.conn()
-    const catalog = await this.resolveModelCatalog()
-    const configured = catalog.find((m) => m.id === model)
+    const configured = c.models.find((m) => m.id === model)
     const contextWindow = configured?.contextWindow ?? c.defaultContextWindow
     return {
       provider: PROVIDER,
@@ -169,49 +161,30 @@ export class DevinAdapter extends LlmAdapter {
     }
   }
 
-  // ─── 动态模型目录 ─────────────────────────────────────────────────────────
+  // ─── 模型发现（供 settings 面板 "Fetch available models" 使用）────────────
 
   /**
-   * 解析当前可用的模型目录。
-   *
-   * 优先从 Devin 服务器动态获取（GetCascadeModelConfigs），带 5 分钟 TTL 缓存；
-   * 网络失败时 fallback 到配置的静态模型列表。
-   * 用户显式配置的 model 即使不在服务器返回的列表中也会被合并进来。
+   * 从 Devin 服务器拉取可用模型列表，供 settings 面板的
+   * "Fetch available models" 按钮调用。返回的模型由用户勾选后
+   * 写入 config.models，listModels 只展示用户配置的模型。
    */
-  private async resolveModelCatalog(): Promise<readonly DevinCatalogModel[]> {
-    // 缓存命中
-    if (this.cachedModels !== null && Date.now() < this.modelsExpiry) {
-      return this.cachedModels
-    }
-
-    const c = this.conn()
-    // 尝试动态获取
-    try {
-      const dynamic = await this.fetchModelCatalog()
-      // 合并用户配置的模型（即使不在服务器列表中也保留）
-      const seen = new Set(dynamic.map((m) => m.id))
-      const merged = [...dynamic]
-      for (const configured of c.models) {
-        if (!seen.has(configured.id)) {
-          merged.push(configured)
-        }
-      }
-      this.cachedModels = merged
-      this.modelsExpiry = Date.now() + DevinAdapter.MODELS_CACHE_TTL_MS
-      return merged
-    } catch {
-      // 网络失败：fallback 到静态配置，短缓存避免频繁重试
-      this.cachedModels = c.models
-      this.modelsExpiry = Date.now() + 30_000
-      return c.models
-    }
+  async discoverModels(signal?: AbortSignal): Promise<LlmDiscoveredModel[]> {
+    const dynamic = await this.fetchModelCatalog(signal)
+    return dynamic.map((m) => ({
+      id: m.id,
+      ...m.name ? { name: m.name } : {},
+      ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
+      ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
+    }))
   }
+
+  // ─── 动态模型目录（内部，仅 discoverModels 使用）──────────────────────────
 
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens / description。
    */
-  private async fetchModelCatalog(): Promise<DevinCatalogModel[]> {
+  private async fetchModelCatalog(signal?: AbortSignal): Promise<DevinCatalogModel[]> {
     const c = this.conn()
     const metadata = create(ExaCodeiumCommonPb_MetadataSchema, {
       apiKey: c.token,
@@ -223,7 +196,7 @@ export class DevinAdapter extends LlmAdapter {
       os: 'win',
     })
     const request = create(GetCascadeModelConfigsRequestSchema, { metadata })
-    const response = await this.client().getCascadeModelConfigs(request)
+    const response = await this.client().getCascadeModelConfigs(request, { signal })
 
     const models: DevinCatalogModel[] = []
     const seen = new Set<string>()

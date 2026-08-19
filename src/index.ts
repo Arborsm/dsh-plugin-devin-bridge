@@ -165,10 +165,11 @@ export function apply(ctx: Context, config: Config): void {
     },
   })
 
-  // 注册 configurable provider 目录 + adapter route
+  // 注册 configurable provider 目录 + adapter route + model discovery
   // registration handle 在重新注册时先释放旧的
   let directoryHandle: (() => void) | null = null
   let adapterHandle: ((() => void) & { replace?: (p: string[]) => void }) | null = null
+  let discoveryHandle: (() => void) | null = null
 
   const register = (): void => {
     // 解析当前 retryPolicy — 注册时捕获，变更需重新注册
@@ -189,9 +190,18 @@ export function apply(ctx: Context, config: Config): void {
     if (!adapterHandle) {
       adapterHandle = ctx.llm.registerAdapter([PROVIDER], adapter) as never
     }
+    if (!discoveryHandle) {
+      discoveryHandle = ctx.llm.registerModelDiscovery(SETTINGS_NS, (request) =>
+        adapter.discoverModels(request.signal),
+      )
+    }
   }
 
   const unregister = (): void => {
+    if (discoveryHandle) {
+      try { discoveryHandle() } catch { /* already disposed */ }
+      discoveryHandle = null
+    }
     if (adapterHandle) {
       try { adapterHandle() } catch { /* already disposed */ }
       adapterHandle = null
