@@ -14,8 +14,8 @@ interface DevinCatalogModel {
   family?: string;
   /** 是否需要付费 plan。 */
   isPremium?: boolean;
-  /** 是否当前处于促销免费期（promo_status.is_active）。 */
-  isFree?: boolean;
+  /** 是否当前处于促销期（promo_status.is_active）。 */
+  isPromo?: boolean;
   /** 信用倍率，用于排序和展示。 */
   creditMultiplier?: number;
 }
@@ -59,7 +59,7 @@ declare class DevinAdapter extends LlmAdapter {
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
-   * description / family / effort / isPremium / isFree / creditMultiplier。
+   * description / family / effort / isPremium / isPromo / creditMultiplier。
    *
    * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
    * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。

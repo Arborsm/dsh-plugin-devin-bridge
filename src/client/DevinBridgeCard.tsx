@@ -31,7 +31,7 @@ interface DevinBridgeConfig {
     supportsImages?: boolean
     family?: string
     isPremium?: boolean
-    isFree?: boolean
+    isPromo?: boolean
     creditMultiplier?: number
   }>
 }
@@ -57,14 +57,14 @@ const SETTINGS_NS = 'dsh-plugin-devin-bridge'
 
 /** 从 discovered candidate 的 name 解析 free/premium/multiplier。 */
 function parseCandidateInfo(model: DiscoveredModel): {
-  isFree?: boolean
+  isPromo?: boolean
   isPremium?: boolean
   creditMultiplier?: number
 } {
   const name = model.name ?? ''
   const multMatch = name.match(/\(([\d.]+)x\)/)
   return {
-    isFree: name.includes('[Free]'),
+    isPromo: name.includes('[Promo]'),
     isPremium: name.includes('[Premium]'),
     ...multMatch ? { creditMultiplier: Number(multMatch[1]) } : {},
   }
@@ -334,7 +334,7 @@ function ModelManager({
         // discoverModels 返回的是 base id（已去掉 effort 后缀）
         // name 里带 [Free]/[Premium]/(Nx) 标记，解析出来
         const rawLabel = candidate.name?.replace(/\s*\[(?:Free|Premium)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim() ?? candidate.id
-        const isFree = candidate.name?.includes('[Free]') ?? false
+        const isPromo = candidate.name?.includes('[Promo]') ?? false
         const isPremium = candidate.name?.includes('[Premium]') ?? false
         const multMatch = candidate.name?.match(/\(([\d.]+)x\)/)
         const creditMultiplier = multMatch ? Number(multMatch[1]) : undefined
@@ -343,7 +343,7 @@ function ModelManager({
           ...rawLabel ? { name: rawLabel } : {},
           ...candidate.contextWindow ? { contextWindow: candidate.contextWindow } : {},
           ...candidate.maxTokens ? { maxTokens: candidate.maxTokens } : {},
-          ...isFree ? { isFree: true } : {},
+          ...isPromo ? { isPromo: true } : {},
           ...isPremium ? { isPremium: true } : {},
           ...creditMultiplier ? { creditMultiplier } : {},
         })
@@ -460,8 +460,8 @@ function ModelManager({
                           onChange={() => togglePick(model.id)}
                         />
                         <span className="devin-bridge-model-id">{model.id}</span>
-                        {info.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-free">Free</span>}
-                        {info.isPremium && !info.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
+                        {info.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-promo">Promo</span>}
+                        {info.isPremium && !info.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
                         {model.contextWindow && (
                           <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k</span>
                         )}
@@ -503,8 +503,8 @@ function ModelManager({
               <div className="devin-bridge-model-item">
                 <span className="devin-bridge-model-id">{model.id}</span>
                 {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
-                {model.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-free">Free</span>}
-                {model.isPremium && !model.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
+                {model.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-promo">Promo</span>}
+                {model.isPremium && !model.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
                 {model.supportsImages && <span className="devin-bridge-model-tag">vision</span>}
                 {model.contextWindow && (
                   <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
@@ -565,7 +565,7 @@ function ModelEditor({
     supportsImages: model.supportsImages ?? false,
     family: model.family ?? '',
     isPremium: model.isPremium ?? false,
-    isFree: model.isFree ?? false,
+    isPromo: model.isPromo ?? false,
     creditMultiplier: model.creditMultiplier?.toString() ?? '',
   })
 
@@ -579,7 +579,7 @@ function ModelEditor({
       ...draft.supportsImages ? { supportsImages: true } : {},
       ...draft.family.trim() ? { family: draft.family.trim() } : {},
       ...draft.isPremium ? { isPremium: true } : {},
-      ...draft.isFree ? { isFree: true } : {},
+      ...draft.isPromo ? { isPromo: true } : {},
       ...draft.creditMultiplier.trim() ? { creditMultiplier: Number(draft.creditMultiplier) } : {},
     }
     await onSave(updated)
@@ -682,11 +682,11 @@ function ModelEditor({
           <input
             type="checkbox"
             className="devin-bridge-checkbox"
-            checked={draft.isFree}
+            checked={draft.isPromo}
             disabled={disabled}
-            onChange={(e) => setDraft({ ...draft, isFree: e.target.checked })}
+            onChange={(e) => setDraft({ ...draft, isPromo: e.target.checked })}
           />
-          <span className="devin-bridge-field-label">Free (promo)</span>
+          <span className="devin-bridge-field-label">Promo</span>
         </label>
         <label className="devin-bridge-checkbox-label">
           <input
@@ -1041,7 +1041,7 @@ const STYLES = (
       font-size: 11px;
       padding: 1px 6px;
     }
-    .devin-bridge-tag-free {
+    .devin-bridge-tag-promo {
       border-color: var(--dsw-alias-state-success-primary, #22c55e);
       color: var(--dsw-alias-state-success-primary, #22c55e);
     }

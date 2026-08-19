@@ -41,7 +41,7 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
     maxTokens: 200_000,
     supportsImages: false,
     family: 'GLM-5.2',
-    isFree: true,
+    isPromo: true,
     creditMultiplier: 1.5,
   },
   {
@@ -89,7 +89,7 @@ const catalogModel: z<DevinCatalogModel> = z.object({
   supportsImages: z.boolean(),
   family: z.string(),
   isPremium: z.boolean(),
-  isFree: z.boolean(),
+  isPromo: z.boolean(),
   creditMultiplier: z.number().step(0.01),
 })
 

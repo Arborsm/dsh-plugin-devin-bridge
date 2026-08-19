@@ -60,8 +60,8 @@ export interface DevinCatalogModel {
   family?: string
   /** 是否需要付费 plan。 */
   isPremium?: boolean
-  /** 是否当前处于促销免费期（promo_status.is_active）。 */
-  isFree?: boolean
+  /** 是否当前处于促销期（promo_status.is_active）。 */
+  isPromo?: boolean
   /** 信用倍率，用于排序和展示。 */
   creditMultiplier?: number
 }
@@ -149,7 +149,7 @@ function toBaseModelId(uid: string): string {
 function formatDiscoveredName(m: DevinCatalogModel): string {
   const parts: string[] = []
   if (m.name) parts.push(m.name)
-  if (m.isFree) parts.push('[Free]')
+  if (m.isPromo) parts.push('[Promo]')
   else if (m.isPremium) parts.push('[Premium]')
   if (m.creditMultiplier && m.creditMultiplier > 0) parts.push(`(${m.creditMultiplier}x)`)
   return parts.join(' ')
@@ -255,8 +255,8 @@ export class DevinAdapter extends LlmAdapter {
         byFamily.set(fam, m)
         continue
       }
-      // 优先选 isFree 的（promo 免费期）
-      if (m.isFree && !existing.isFree) {
+      // 优先选 isPromo 的（促销期）
+      if (m.isPromo && !existing.isPromo) {
         byFamily.set(fam, m)
       }
     }
@@ -274,7 +274,7 @@ export class DevinAdapter extends LlmAdapter {
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
-   * description / family / effort / isPremium / isFree / creditMultiplier。
+   * description / family / effort / isPremium / isPromo / creditMultiplier。
    *
    * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
    * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。
@@ -302,7 +302,7 @@ export class DevinAdapter extends LlmAdapter {
       seen.add(uid)
       const family = config.modelFamilyMetadata?.modelFamilyLabel || undefined
       const effort = parseEffortFromLabel(config.label)
-      const isFree = config.promoStatus?.isActive === true
+      const isPromo = config.promoStatus?.isActive === true
       models.push({
         id: uid,
         ...config.label ? { name: config.label } : {},
@@ -312,7 +312,7 @@ export class DevinAdapter extends LlmAdapter {
         ...family ? { family } : {},
         ...effort ? { effort } : {},
         isPremium: config.isPremium,
-        ...isFree ? { isFree: true } : {},
+        ...isPromo ? { isPromo: true } : {},
         ...config.creditMultiplier > 0 ? { creditMultiplier: config.creditMultiplier } : {},
       })
     }
