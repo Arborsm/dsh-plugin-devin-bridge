@@ -56,6 +56,52 @@ const PROVIDER = 'devin'
 /** Settings namespace — 必须和 host 端一致。 */
 const SETTINGS_NS = 'dsh-plugin-devin-bridge'
 
+/** 从 discovered candidate 的 name 解析 effort/free/premium/multiplier。 */
+function parseCandidateInfo(model: DiscoveredModel): {
+  effort?: string
+  isFree?: boolean
+  isPremium?: boolean
+  creditMultiplier?: number
+} {
+  const name = model.name ?? ''
+  const effortMatch = name.match(/\b(Max|High|Medium|Low|No Thinking|Lightning)\b/i)
+  const multMatch = name.match(/\(([\d.]+)x\)/)
+  return {
+    ...effortMatch ? { effort: effortMatch[0] } : {},
+    isFree: name.includes('[Free]'),
+    isPremium: name.includes('[Premium]'),
+    ...multMatch ? { creditMultiplier: Number(multMatch[1]) } : {},
+  }
+}
+
+/** 把候选模型按 family 分组（从 name 解析 family）。 */
+function groupCandidatesByFamily(models: DiscoveredModel[]): Array<{ family: string; models: DiscoveredModel[] }> {
+  const groups = new Map<string, DiscoveredModel[]>()
+  for (const m of models) {
+    const rawLabel = (m.name ?? m.id).replace(/\s*\[(?:Free|Premium)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim()
+    // 去掉 effort 词
+    let family = rawLabel.replace(/\s*\b(Max|High|Medium|Low|No Thinking|Lightning)\b\s*/gi, '').trim()
+    // Lightning 是 SWE-1.7 Lightning 系列前缀，保留为独立 family
+    if (rawLabel.includes('Lightning') && !family.includes('Lightning')) {
+      family = family + ' Lightning'
+    }
+    if (!family) family = m.id
+    const arr = groups.get(family) ?? []
+    arr.push(m)
+    groups.set(family, arr)
+  }
+  // 按 family 名排序，Free 的 family 优先
+  return [...groups.entries()]
+    .map(([family, ms]) => ({ family, models: ms }))
+    .sort((a, b) => {
+      // Free family 优先
+      const aFree = a.models.some(m => m.name?.includes('[Free]'))
+      const bFree = b.models.some(m => m.name?.includes('[Free]'))
+      if (aFree !== bFree) return aFree ? -1 : 1
+      return a.family.localeCompare(b.family)
+    })
+}
+
 /**
  * 渲染 Devin Bridge 配置卡片。
  * @param props - settings scope 和 api 注入的 props。
@@ -401,31 +447,47 @@ function ModelManager({
         </div>
       )}
 
-      {/* Fetch 候选列表 */}
+      {/* Fetch 候选列表 — 按 family 分组 */}
       {candidates !== null && (
         <div className="devin-bridge-fetch-picker">
           <p className="devin-bridge-field-hint">
-            Choose models to add ({candidates.length} available, {picked.size} selected):
+            {candidates.length} models available, {picked.size} selected. Grouped by family.
           </p>
-          <ul className="devin-bridge-candidate-list">
-            {candidates.map((model) => (
-              <li key={model.id} className="devin-bridge-candidate-item">
-                <label className="devin-bridge-candidate-label">
-                  <input
-                    type="checkbox"
-                    className="devin-bridge-checkbox"
-                    checked={picked.has(model.id)}
-                    onChange={() => togglePick(model.id)}
-                  />
-                  <span className="devin-bridge-model-id">{model.id}</span>
-                  {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
-                  {model.contextWindow && (
-                    <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
-                  )}
-                </label>
-              </li>
-            ))}
-          </ul>
+          {groupCandidatesByFamily(candidates).map(({ family, models }) => (
+            <div key={family} className="devin-bridge-family-group">
+              <div className="devin-bridge-family-header">
+                <span className="devin-bridge-family-name">{family}</span>
+                <span className="devin-bridge-family-count">{models.length}</span>
+              </div>
+              <ul className="devin-bridge-candidate-list">
+                {models.map((model) => {
+                  const info = parseCandidateInfo(model)
+                  return (
+                    <li key={model.id} className="devin-bridge-candidate-item">
+                      <label className="devin-bridge-candidate-label">
+                        <input
+                          type="checkbox"
+                          className="devin-bridge-checkbox"
+                          checked={picked.has(model.id)}
+                          onChange={() => togglePick(model.id)}
+                        />
+                        {info.effort && <span className="devin-bridge-model-tag">{info.effort}</span>}
+                        <span className="devin-bridge-model-id">{model.id}</span>
+                        {info.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-free">Free</span>}
+                        {info.isPremium && !info.isFree && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
+                        {model.contextWindow && (
+                          <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k</span>
+                        )}
+                        {info.creditMultiplier && (
+                          <span className="devin-bridge-model-tag">{info.creditMultiplier}x</span>
+                        )}
+                      </label>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          ))}
           <div className="devin-bridge-model-actions">
             <button
               type="button"
@@ -925,17 +987,44 @@ const STYLES = (
     .devin-bridge-candidate-list {
       flex-direction: column;
       gap: 4px;
-      margin: 0;
+      margin: 0 0 8px 0;
       padding: 0;
       list-style: none;
       display: flex;
-      max-height: 240px;
-      overflow-y: auto;
     }
     .devin-bridge-candidate-item {
       border: 1px solid var(--dsw-alias-border-l1);
       border-radius: 6px;
       padding: 4px 8px;
+    }
+    .devin-bridge-family-group {
+      margin-bottom: 8px;
+    }
+    .devin-bridge-family-header {
+      align-items: center;
+      display: flex;
+      gap: 8px;
+      padding: 4px 0;
+      position: sticky;
+      top: 0;
+      background: var(--dsw-alias-bg-primary, #fff);
+      z-index: 1;
+    }
+    .devin-bridge-family-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--dsw-alias-label-primary);
+    }
+    .devin-bridge-family-count {
+      border: 1px solid var(--dsw-alias-border-l3);
+      border-radius: 10px;
+      color: var(--dsw-alias-label-secondary);
+      font-size: 11px;
+      padding: 0 6px;
+    }
+    .devin-bridge-fetch-picker {
+      max-height: 360px;
+      overflow-y: auto;
     }
     .devin-bridge-candidate-label {
       display: flex;
