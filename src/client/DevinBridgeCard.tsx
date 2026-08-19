@@ -6,6 +6,7 @@
  * 模型管理支持：
  * - 从 Devin 服务器动态拉取可用模型（Fetch available models）
  * - 手动添加模型
+ * - 编辑模型详情（name/contextWindow/maxTokens/supportsImages/description）
  * - 删除已配置模型
  */
 
@@ -45,24 +46,9 @@ export interface DevinBridgeCardProps {
   api: IApiClient
 }
 
-/** 字段元数据。 */
-interface FieldDef {
-  key: keyof DevinBridgeConfig
-  label: string
-  hint: string
-  type: 'text' | 'password' | 'number' | 'checkbox'
-  placeholder?: string
-}
-
-const FIELDS: readonly FieldDef[] = [
-  { key: 'token', label: 'Token', hint: 'Devin session token (devin-session-token$...). Leave empty to auto-detect from credentials.toml.', type: 'password', placeholder: 'devin-session-token$...' },
-  { key: 'baseUrl', label: 'Base URL', hint: 'Devin Connect endpoint.', type: 'text', placeholder: 'https://server.codeium.com' },
-  { key: 'proxy', label: 'Proxy', hint: 'Outbound proxy URL (http/https/socks5). Leave empty for direct connection.', type: 'text', placeholder: 'socks5://127.0.0.1:1080' },
-  { key: 'forceHttp1', label: 'Force HTTP/1.1', hint: 'Force HTTP/1.1 connection to Devin.', type: 'checkbox' },
-  { key: 'defaultContextWindow', label: 'Default Context Window', hint: 'Fallback context window in tokens.', type: 'number', placeholder: '128000' },
-  { key: 'defaultMaxTokens', label: 'Default Max Tokens', hint: 'Fallback max output tokens.', type: 'number', placeholder: '16384' },
-]
-
+/** Provider route key — 必须和 host 端 PROVIDER 一致。 */
+const PROVIDER = 'devin'
+/** Settings namespace — 必须和 host 端一致。 */
 const SETTINGS_NS = 'dsh-plugin-devin-bridge'
 
 /**
@@ -151,17 +137,7 @@ export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode
             <p className="devin-bridge-readonly" role="status">Read-only settings provider.</p>
           )}
 
-          {FIELDS.map((field) => (
-            <FieldRow
-              key={field.key}
-              def={field}
-              value={value?.[field.key]}
-              disabled={disabled}
-              onSave={handleSaveField}
-            />
-          ))}
-
-          {/* 模型管理 */}
+          {/* 模型管理（主要功能，默认展开） */}
           <ModelManager
             models={value?.models ?? []}
             disabled={disabled}
@@ -169,6 +145,19 @@ export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode
             onSave={handleSaveModels}
             onError={setError}
           />
+
+          {/* 高级选项（默认折叠） */}
+          <details className="devin-bridge-advanced">
+            <summary className="devin-bridge-advanced-summary">Advanced settings</summary>
+            <div className="devin-bridge-advanced-body">
+              <FieldRow def={ADVANCED_FIELDS.token} value={value?.token} disabled={disabled} onSave={handleSaveField} />
+              <FieldRow def={ADVANCED_FIELDS.baseUrl} value={value?.baseUrl} disabled={disabled} onSave={handleSaveField} />
+              <FieldRow def={ADVANCED_FIELDS.proxy} value={value?.proxy} disabled={disabled} onSave={handleSaveField} />
+              <FieldRow def={ADVANCED_FIELDS.forceHttp1} value={value?.forceHttp1} disabled={disabled} onSave={handleSaveField} />
+              <FieldRow def={ADVANCED_FIELDS.defaultContextWindow} value={value?.defaultContextWindow} disabled={disabled} onSave={handleSaveField} />
+              <FieldRow def={ADVANCED_FIELDS.defaultMaxTokens} value={value?.defaultMaxTokens} disabled={disabled} onSave={handleSaveField} />
+            </div>
+          </details>
 
           {error && <p className="devin-bridge-error" role="status">{error}</p>}
           {saving && <p className="devin-bridge-hint">Saving…</p>}
@@ -180,7 +169,60 @@ export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode
   )
 }
 
-/** 模型管理组件：fetch + 手动添加 + 列表 + 删除。 */
+/** 高级选项字段定义。 */
+const ADVANCED_FIELDS = {
+  token: {
+    key: 'token' as const,
+    label: 'Token',
+    hint: 'Devin session token. Leave empty to auto-detect from credentials.toml.',
+    type: 'password' as const,
+    placeholder: 'devin-session-token$...',
+  },
+  baseUrl: {
+    key: 'baseUrl' as const,
+    label: 'Base URL',
+    hint: 'Devin Connect endpoint.',
+    type: 'text' as const,
+    placeholder: 'https://server.codeium.com',
+  },
+  proxy: {
+    key: 'proxy' as const,
+    label: 'Proxy',
+    hint: 'Outbound proxy URL. Leave empty for direct connection.',
+    type: 'text' as const,
+    placeholder: 'socks5://127.0.0.1:1080',
+  },
+  forceHttp1: {
+    key: 'forceHttp1' as const,
+    label: 'Force HTTP/1.1',
+    hint: 'Force HTTP/1.1 connection to Devin.',
+    type: 'checkbox' as const,
+  },
+  defaultContextWindow: {
+    key: 'defaultContextWindow' as const,
+    label: 'Default Context Window',
+    hint: 'Fallback context window in tokens.',
+    type: 'number' as const,
+    placeholder: '200000',
+  },
+  defaultMaxTokens: {
+    key: 'defaultMaxTokens' as const,
+    label: 'Default Max Tokens',
+    hint: 'Fallback max output tokens.',
+    type: 'number' as const,
+    placeholder: '16384',
+  },
+}
+
+interface FieldDef {
+  key: keyof DevinBridgeConfig
+  label: string
+  hint: string
+  type: 'text' | 'password' | 'number' | 'checkbox'
+  placeholder?: string
+}
+
+/** 模型管理组件：fetch + 手动添加 + 列表 + 编辑 + 删除。 */
 function ModelManager({
   models,
   disabled,
@@ -200,12 +242,17 @@ function ModelManager({
   const [showAddManual, setShowAddManual] = useState(false)
   const [manualId, setManualId] = useState('')
   const [manualName, setManualName] = useState('')
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
 
   const handleFetch = async () => {
     setFetching(true)
     onError(null)
     try {
-      const response = await api.llm.discoverModels({ settingsNs: SETTINGS_NS })
+      // 传 provider: 'devin' 让 dsh-llm 路由到已注册的 adapter discovery
+      const response = await api.llm.discoverModels({
+        settingsNs: SETTINGS_NS,
+        provider: PROVIDER,
+      })
       if (!response.result.ok) {
         onError(response.result.error.message)
         return
@@ -267,6 +314,12 @@ function ModelManager({
 
   const handleRemove = async (index: number) => {
     await onSave(models.filter((_, i) => i !== index))
+    if (editingIndex === index) setEditingIndex(null)
+  }
+
+  const handleUpdateModel = async (index: number, updated: DevinBridgeConfig['models'][number]) => {
+    const next = models.map((m, i) => i === index ? updated : m)
+    await onSave(next)
   }
 
   return (
@@ -376,27 +429,165 @@ function ModelManager({
       {models.length > 0 ? (
         <ul className="devin-bridge-model-list">
           {models.map((model, index) => (
-            <li key={model.id + index} className="devin-bridge-model-item">
-              <span className="devin-bridge-model-id">{model.id}</span>
-              {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
-              {model.supportsImages && <span className="devin-bridge-model-tag">vision</span>}
-              {model.contextWindow && (
-                <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
+            <li key={model.id + index} className="devin-bridge-model-item-wrap">
+              <div className="devin-bridge-model-item">
+                <span className="devin-bridge-model-id">{model.id}</span>
+                {model.name && <span className="devin-bridge-model-name">{model.name}</span>}
+                {model.supportsImages && <span className="devin-bridge-model-tag">vision</span>}
+                {model.contextWindow && (
+                  <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
+                )}
+                <button
+                  type="button"
+                  className="devin-bridge-model-edit"
+                  disabled={disabled}
+                  onClick={() => setEditingIndex(editingIndex === index ? null : index)}
+                >
+                  {editingIndex === index ? 'Close' : 'Edit'}
+                </button>
+                <button
+                  type="button"
+                  className="devin-bridge-model-remove"
+                  disabled={disabled}
+                  onClick={() => handleRemove(index)}
+                >
+                  Remove
+                </button>
+              </div>
+              {editingIndex === index && (
+                <ModelEditor
+                  model={model}
+                  disabled={disabled}
+                  onSave={(updated) => handleUpdateModel(index, updated)}
+                  onClose={() => setEditingIndex(null)}
+                />
               )}
-              <button
-                type="button"
-                className="devin-bridge-model-remove"
-                disabled={disabled}
-                onClick={() => handleRemove(index)}
-              >
-                Remove
-              </button>
             </li>
           ))}
         </ul>
       ) : (
         <p className="devin-bridge-hint">No models configured. Defaults will be used.</p>
       )}
+    </div>
+  )
+}
+
+/** 模型编辑器：编辑单个模型的详情字段。 */
+function ModelEditor({
+  model,
+  disabled,
+  onSave,
+  onClose,
+}: {
+  model: DevinBridgeConfig['models'][number]
+  disabled: boolean
+  onSave: (model: DevinBridgeConfig['models'][number]) => Promise<void>
+  onClose: () => void
+}): ReactNode {
+  const [draft, setDraft] = useState({
+    id: model.id,
+    name: model.name ?? '',
+    description: model.description ?? '',
+    contextWindow: model.contextWindow?.toString() ?? '',
+    maxTokens: model.maxTokens?.toString() ?? '',
+    supportsImages: model.supportsImages ?? false,
+  })
+
+  const handleSave = async () => {
+    const updated: DevinBridgeConfig['models'][number] = {
+      id: draft.id,
+      ...draft.name.trim() ? { name: draft.name.trim() } : {},
+      ...draft.description.trim() ? { description: draft.description.trim() } : {},
+      ...draft.contextWindow.trim() ? { contextWindow: Number(draft.contextWindow) } : {},
+      ...draft.maxTokens.trim() ? { maxTokens: Number(draft.maxTokens) } : {},
+      ...draft.supportsImages ? { supportsImages: true } : {},
+    }
+    await onSave(updated)
+    onClose()
+  }
+
+  return (
+    <div className="devin-bridge-model-editor">
+      <div className="devin-bridge-field">
+        <span className="devin-bridge-field-label">ID</span>
+        <input
+          className="devin-bridge-input"
+          type="text"
+          value={draft.id}
+          disabled={true}
+        />
+      </div>
+      <div className="devin-bridge-field">
+        <span className="devin-bridge-field-label">Name</span>
+        <input
+          className="devin-bridge-input"
+          type="text"
+          value={draft.name}
+          disabled={disabled}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+        />
+      </div>
+      <div className="devin-bridge-field">
+        <span className="devin-bridge-field-label">Description</span>
+        <input
+          className="devin-bridge-input"
+          type="text"
+          value={draft.description}
+          disabled={disabled}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+        />
+      </div>
+      <div className="devin-bridge-editor-row">
+        <div className="devin-bridge-field">
+          <span className="devin-bridge-field-label">Context Window</span>
+          <input
+            className="devin-bridge-input"
+            type="number"
+            value={draft.contextWindow}
+            placeholder="200000"
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, contextWindow: e.target.value })}
+          />
+        </div>
+        <div className="devin-bridge-field">
+          <span className="devin-bridge-field-label">Max Tokens</span>
+          <input
+            className="devin-bridge-input"
+            type="number"
+            value={draft.maxTokens}
+            placeholder="16384"
+            disabled={disabled}
+            onChange={(e) => setDraft({ ...draft, maxTokens: e.target.value })}
+          />
+        </div>
+      </div>
+      <label className="devin-bridge-checkbox-label">
+        <input
+          type="checkbox"
+          className="devin-bridge-checkbox"
+          checked={draft.supportsImages}
+          disabled={disabled}
+          onChange={(e) => setDraft({ ...draft, supportsImages: e.target.checked })}
+        />
+        <span className="devin-bridge-field-label">Supports Images</span>
+      </label>
+      <div className="devin-bridge-model-actions">
+        <button
+          type="button"
+          className="devin-bridge-btn"
+          disabled={disabled}
+          onClick={handleSave}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          className="devin-bridge-btn devin-bridge-btn-secondary"
+          onClick={onClose}
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   )
 }
@@ -519,6 +710,22 @@ const STYLES = (
       flex-direction: column;
       gap: 12px;
       display: flex;
+    }
+    .devin-bridge-advanced {
+      border-top: 1px solid var(--dsw-alias-border-l2);
+      padding-top: 8px;
+    }
+    .devin-bridge-advanced-summary {
+      color: var(--dsw-alias-label-secondary);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 4px 0;
+    }
+    .devin-bridge-advanced-body {
+      flex-direction: column;
+      gap: 12px;
+      display: flex;
+      padding-top: 8px;
     }
     .devin-bridge-field {
       flex-direction: column;
@@ -651,6 +858,11 @@ const STYLES = (
       list-style: none;
       display: flex;
     }
+    .devin-bridge-model-item-wrap {
+      flex-direction: column;
+      gap: 0;
+      display: flex;
+    }
     .devin-bridge-model-item {
       align-items: center;
       gap: 8px;
@@ -674,7 +886,7 @@ const STYLES = (
       font-size: 11px;
       padding: 1px 6px;
     }
-    .devin-bridge-model-remove {
+    .devin-bridge-model-edit {
       background: none;
       border: 1px solid var(--dsw-alias-border-l2);
       border-radius: 6px;
@@ -685,12 +897,45 @@ const STYLES = (
       margin-left: auto;
       padding: 2px 8px;
     }
+    .devin-bridge-model-edit:hover:not(:disabled) {
+      background: var(--dsw-alias-interactive-bg-hover-solid);
+      color: var(--dsw-alias-label-primary);
+    }
+    .devin-bridge-model-edit:disabled {
+      opacity: 0.5;
+    }
+    .devin-bridge-model-remove {
+      background: none;
+      border: 1px solid var(--dsw-alias-border-l2);
+      border-radius: 6px;
+      color: var(--dsw-alias-label-secondary);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      padding: 2px 8px;
+    }
     .devin-bridge-model-remove:hover:not(:disabled) {
       background: var(--dsw-alias-interactive-bg-hover-solid);
       color: var(--dsw-alias-label-primary);
     }
     .devin-bridge-model-remove:disabled {
       opacity: 0.5;
+    }
+    .devin-bridge-model-editor {
+      border: 1px solid var(--dsw-alias-border-l1);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      padding: 10px;
+      flex-direction: column;
+      gap: 10px;
+      display: flex;
+    }
+    .devin-bridge-editor-row {
+      display: flex;
+      gap: 12px;
+    }
+    .devin-bridge-editor-row .devin-bridge-field {
+      flex: 1;
     }
   `}</style>
 )
