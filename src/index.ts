@@ -184,7 +184,7 @@ export function apply(ctx: Context, config: Config): void {
 
     if (!directoryHandle) {
       directoryHandle = ctx.llm.registerConfigurableProviders([
-        { provider: PROVIDER, displayName: 'Devin', settingsNs: name, settingsPath: [] },
+        { provider: PROVIDER, displayName: 'Devin', settingsNs: SETTINGS_NS, settingsPath: [] },
       ])
     }
     if (!adapterHandle) {
