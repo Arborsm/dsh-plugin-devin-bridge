@@ -1,134 +1,103 @@
 # dsh-plugin-devin-bridge
 
-[English](README.md) | 中文
+[English](README.md) | [中文](README.zh.md)
 
-一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，把 [Devin Connect](https://codeium.com/) 的 `GetChatMessage` / `GetCascadeModelConfigs` RPC 反代为 OpenAI Chat Completions 兼容的 HTTP API。任何兼容 OpenAI 的客户端（openai-python、Continue、Cline 等）都能通过本地 Harness profile 调用 Devin 模型，例如 `glm-5.2` 和 `swe-1.7`。
+一个 [dsh](https://github.com/deepseek-ai/deepseek-harness) LLM 适配器插件，将 [Devin](https://devin.ai) 的 Connect RPC API 桥接到 dsh 模型提供者系统，让 dsh 内部的 agent loop 能够使用 Devin 托管的模型（`glm-5.2`、`swe-1.7` 及 Devin 暴露的其他模型）作为后端。
 
-## 功能
+## 工作原理
 
-- 在 Harness 内置 web server 上注册 `/v1/chat/completions` 和 `/v1/models`。
-- 把 OpenAI Chat Completions 请求翻译为 Devin Connect protobuf RPC 调用。
-- 把 Devin 响应以 SSE 流（`text/event-stream`）或单条非流式 JSON 返回。
-- Devin thinking 增量映射为 `reasoning_content`（DeepSeek 风格扩展）。
-- 支持工具调用（`tools` + `tool_choice`）、system prompt、多轮历史和图片输入（base64 data URL，仅视觉模型）。
-- 只发送**当前轮**图片；历史中的旧图片替换为 `[Image omitted from history]`，避免 Devin 拒绝请求。
-- 清洗 Codex `<permissions instructions>` 块和 Claude 身份字符串，避免触发 Devin 内容策略。
-- 可选 `apiKey` 用 `Authorization: Bearer <key>` 保护 `/v1/*` 接口。
-- 可选出站代理（`http://`、`https://`、`socks5://`、`socks5h://`）。
+插件通过 dsh LLM seam（`LlmAdapter`）在 `ctx.llm` 上注册 `devin` provider route。当 dsh 的 agent loop 把请求路由到 `provider: devin` 时，适配器会：
+
+1. 把 dsh 的 `GenerateOptions`（消息、工具、系统提示词、图片）翻译成 Devin 的 `GetChatMessageRequest` protobuf
+2. 从 Devin 的 Connect RPC 端点流式获取响应
+3. 把每个 `GetChatMessageResponse` 帧解码为 dsh 的 `StreamChunk` 协议（文本增量、推理增量、工具调用增量、token 用量、结束原因）
 
 ## 安装
 
-```sh
-git clone https://github.com/Arborsm/dsh-plugin-devin-bridge.git
-cd dsh-plugin-devin-bridge
-pnpm install
-pnpm run check          # 类型检查 + 构建
-dsh plugin --profile devin add .
-dsh --profile devin --dump-config | grep devin-bridge
-dsh --profile devin
+```bash
+pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 ```
 
-然后把 OpenAI 客户端指向 Harness web server：
+## Token 解析
 
-```sh
-export OPENAI_BASE_URL=http://127.0.0.1:<dsh-port>/v1
-export OPENAI_API_KEY=<cordis.patch.yml 中配置的 apiKey，留空时任意值>
-```
+适配器需要 Devin session token（格式：`devin-session-token$<...>`）进行认证。按以下优先级解析：
+
+1. **设置面板** — 在 dsh 设置 UI 中填写 `token`（标记为 secret，wire 响应自动脱敏）
+2. **Entry config** — 插件组合层的 `config.token`
+3. **Devin CLI 凭证** — 自动从 `devin auth login` 创建的 `credentials.toml` 读取：
+   - Windows：`%APPDATA%\devin\credentials.toml`
+   - macOS/Linux：`~/.local/share/devin/credentials.toml`（或 `$XDG_DATA_HOME/devin/credentials.toml`）
+   - 通过 `DEVIN_CREDENTIALS_PATH` 环境变量覆盖路径
+
+如果都没找到，插件在启动时抛出带有明确指引的错误。
 
 ## 配置
 
-编辑仓库中的 `cordis.patch.yml`（或 profile 中已安装的副本），填入 Devin session token：
+所有字段均可选——只要有 token（通过设置面板、entry config 或 credentials.toml），插件即可开箱即用。
 
 ```yaml
-- insert:
-    - id: devin-bridge
-      name: dsh-plugin-devin-bridge
-      config:
-        baseUrl: "https://server.codeium.com"
-        token: "devin-session-token$..."   # 必填
-        model: "glm-5-2"                    # 默认模型 uid
-        proxy: ""                           # 可选出站代理
-        forceHttp1: true                    # 强制 HTTP/1.1
-        apiKey: ""                          # 可选 /v1/* 访问密钥
+- id: devin-bridge
+  name: dsh-plugin-devin-bridge
+  config:
+    token: ""  # 可选：显式 token；留空则从 credentials.toml 自动检测
+    baseUrl: "https://server.codeium.com"  # 可选：Devin Connect 端点
+    proxy: ""  # 可选：出站代理 URL（http/https/socks5）
+    forceHttp1: true  # 可选：强制 HTTP/1.1（默认 true）
+    defaultContextWindow: 128000  # 可选：默认上下文窗口
+    defaultMaxTokens: 16384  # 可选：默认最大输出 token
+    models:  # 可选；默认包含 glm-5-2 和 swe-1-7
+      - id: "glm-5-2"
+        name: "GLM-5.2"
+        contextWindow: 128000
+        maxTokens: 16384
+        supportsImages: false
+      - id: "swe-1-7"
+        name: "SWE-1.7"
+        contextWindow: 128000
+        maxTokens: 16384
+        supportsImages: true
+    retryPolicy:  # 可选
+      mode: normal
+      maxRetries: 3
+      backoff:
+        initialDelayMs: 500
+        maxDelayMs: 10000
+        jitterRatio: 0.1
 ```
 
-| 字段        | 必填 | 说明                                                                          |
-|-------------|------|-------------------------------------------------------------------------------|
-| `baseUrl`   | 是   | Devin Connect 端点，通常 `https://server.codeium.com`。                       |
-| `token`     | 是   | Devin session token，格式 `devin-session-token$<...>`。                       |
-| `model`     | 否   | 请求未指定模型时使用的默认 uid，默认 `glm-5-2`。                                |
-| `proxy`     | 否   | 出站代理 URL，支持 `http://`、`https://`、`socks5://`、`socks5h://`。          |
-| `forceHttp1`| 否   | 强制 HTTP/1.1 连接 Devin，默认 `true`。                                        |
-| `apiKey`    | 否   | 用 `Authorization: Bearer <apiKey>` 保护 `/v1/*`，留空不鉴权。                  |
+当 dsh settings 服务可用时，以上所有字段都可以通过设置面板在运行时动态调整——变更即时生效（`live` applies）。`token` 字段标记为 `role('secret')`，在返回给 wire surface 的 settings descriptor 中自动脱敏。
 
-## 使用
+## 使用方式
 
-profile 启动后，任何兼容 OpenAI 的客户端都能用：
+配置完成后，dsh 的模型选择器会显示 `Devin` provider 及可用模型。在 dsh UI 中选择任一模型，或通过 `provider: devin` 编程式路由。
 
-```python
-from openai import OpenAI
-client = OpenAI(
-    base_url="http://127.0.0.1:<dsh-port>/v1",
-    api_key="<apiKey 或任意值>",
-)
-resp = client.chat.completions.create(
-    model="glm-5-2",
-    messages=[{"role": "user", "content": "你好"}],
-    stream=True,
-)
-for chunk in resp:
-    print(chunk.choices[0].delta.content or "", end="")
+## 功能特性
+
+- **动态模型目录**：通过 `GetCascadeModelConfigs` RPC 从 Devin 服务器实时拉取可用模型列表（5 分钟 TTL 缓存），与用户配置的静态模型合并。网络失败时优雅降级到静态配置。
+- **文本流式输出**：完整的文本增量流式传输与 block 组装
+- **推理/思考**：推理内容映射到 dsh 的 `reasoning` block 类型
+- **工具调用**：Devin 工具调用增量翻译为 dsh 的 `tool-call` block
+- **图片支持**：有视觉能力的模型通过 dsh 的 attachment 系统接受图片输入
+- **Token 用量**：输入/输出 token 计量上报给 dsh
+- **系统提示词清洗**：跨模型兼容的身份无关系统提示词重写
+- **代理支持**：可选的出站 HTTP/HTTPS/SOCKS5 代理
+- **设置面板集成**：通过 dsh settings 服务在运行时动态调整配置
+- **凭证自动检测**：未显式配置 token 时自动读取 `devin auth login` 的凭证
+
+## 架构
+
 ```
-
-列出可用模型：
-
-```sh
-curl http://127.0.0.1:<dsh-port>/v1/models \
-  -H "Authorization: Bearer <apiKey>"
-```
-
-## 项目结构
-
-```text
 src/
-  index.ts              # Cordis 插件入口（apply + Config schema）
-  gateway.ts            # /v1/chat/completions + /v1/models 路由、鉴权、错误处理
-  adapter/
-    transport.ts        # Connect transport、Basic auth 注入、代理 agent
-    devin.ts            # RequestMessages -> Devin RPC（buildRequest + Stream + ListModels）
-    decoder.ts          # GetChatMessageResponse 帧 -> ResponseEvent 流式解码
-  api/chat/
-    decode.ts           # OpenAI Chat 请求 JSON -> 中间 RequestMessages
-    encode.ts           # ResponseEvent -> SSE chunks / 非流式 JSON
-  llm/
-    types.ts            # LLM 无关的 message/content/event 类型
-    validate.ts         # 请求校验
-  proto/
-    devin.proto         # 裁剪后的 protobuf 定义
-    gen/devin_pb.ts     # 生成的 TS 绑定（protoc-gen-es v2）
-cordis.patch.yml        # 插件注册 + schemastery 配置
-package.json            # dsh bundle manifest + 依赖
-tsdown.config.ts        # 构建配置
-tsconfig.json           # 类型检查配置
+├── index.ts              # Cordis 插件入口：Config schema、设置面板接入、ctx.llm 注册
+├── adapter/
+│   ├── devin.ts          # DevinAdapter：GenerateOptions → Devin RPC → StreamChunk
+│   ├── decoder.ts        # GetChatMessageResponse → StreamChunk 转换
+│   ├── transport.ts      # Connect transport，注入 auth + proxy
+│   └── credentials.ts    # Devin CLI credentials.toml 自动检测
+└── proto/
+    ├── devin.proto       # 裁剪后的 protobuf 定义
+    └── gen/              # @bufbuild/protobuf 生成代码
 ```
-
-## 构建
-
-```sh
-pnpm install
-pnpm run proto:gen       # 从 devin.proto 重新生成 src/proto/gen/devin_pb.ts
-pnpm run typecheck       # tsc --noEmit
-pnpm run build           # tsdown -> lib/index.js
-```
-
-`proto:gen` 需要 `protoc` + `@bufbuild/protoc-gen-es`。仓库已提交生成的 `src/proto/gen/devin_pb.ts`，最终用户构建插件时不需要 protoc。
-
-## 兼容性说明
-
-- thinking 内容以 `reasoning_content` 输出（流式增量与非流式最终消息均包含），这是 DeepSeek 风格扩展，不属于 OpenAI 官方规范。
-- 双向支持 `tool_calls`。工具结果必须以 `role: "tool"` + `tool_call_id` 回传。
-- 不下载 HTTP(S) 图片 URL；请用 `data:image/...;base64,...` 或带 `mime_type` 的裸 base64。
-- `/v1/models` 合并 Devin `GetCascadeModelConfigs` 返回的模型与配置的默认 `model`，上游配置异常时也能暴露配置模型。
 
 ## 许可证
 

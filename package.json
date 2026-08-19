@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-devin-bridge",
   "version": "0.1.0",
-  "description": "Devin Connect 反代为 OpenAI Chat Completions 兼容协议的 dsh 插件，服务 glm-5.2 / swe-1.7。",
+  "description": "dsh LLM adapter plugin that bridges Devin Connect RPC into the dsh model provider system, with dynamic model catalog, settings panel integration, and Devin CLI credential auto-detection.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -32,8 +32,10 @@
     "dsh-plugin",
     "deepseek-harness",
     "devin",
-    "openai",
-    "proxy"
+    "llm-adapter",
+    "glm-5.2",
+    "swe-1.7",
+    "connect-rpc"
   ],
   "repository": {
     "type": "git",
@@ -43,6 +45,14 @@
     "@bufbuild/protobuf": "^2.14.0",
     "@connectrpc/connect": "^2.1.2",
     "@connectrpc/connect-node": "^2.1.2",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-attachment": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-brand": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-timeout": "0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "^3.18.1",
     "https-proxy-agent": "^9.1.0",
     "socks-proxy-agent": "^10.1.0"
   },

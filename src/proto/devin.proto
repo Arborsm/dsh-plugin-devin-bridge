@@ -95,10 +95,15 @@ message ExaCodeiumCommonPb_ModelUsageStats {
 // ─── Client model config (model list response) ──────────────────────────────
 
 message ExaCodeiumCommonPb_ClientModelConfig {
+  optional string label = 1;
   optional bool disabled = 4;
   optional bool supports_images = 5;
+  optional bool is_premium = 7;
+  optional bool is_beta = 9;
   optional ExaCodeiumCommonPb_ModelProvider provider = 10;
+  optional int32 max_tokens = 18;
   optional string model_uid = 22;
+  optional string description = 27;
 }
 
 // ─── Request / Response messages ────────────────────────────────────────────

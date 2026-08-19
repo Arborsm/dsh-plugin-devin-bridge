@@ -1,101 +1,113 @@
-import { IncomingMessage, ServerResponse } from "node:http";
-//#region src/gateway.d.ts
-interface DevinBridgeConfig {
+import z from "@deepseek-ai/schemastery";
+import { GenerateOptions, LlmAdapter, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, RetryPolicyConfig, StreamChunk } from "@deepseek-ai/dsh-llm";
+import { Context } from "@deepseek-ai/cordis";
+import { ImageAttachmentRef, StoredImageAttachment } from "@deepseek-ai/dsh-attachment";
+//#region src/adapter/devin.d.ts
+interface DevinCatalogModel {
+  id: string;
+  name?: string;
+  description?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  supportsImages?: boolean;
+}
+interface DevinConnectionOptions {
   baseUrl: string;
   token: string;
-  model: string;
   proxy?: string;
   forceHttp1: boolean;
-  apiKey?: string;
+  models: readonly DevinCatalogModel[];
+  defaultContextWindow: number;
+  defaultMaxTokens: number;
+  /** 可选的 attachment 读取器，用于获取图片字节 */
+  readImage?: (ref: ImageAttachmentRef, signal?: AbortSignal) => Promise<StoredImageAttachment>;
 }
-interface WebRoute {
-  kind: 'exact' | 'prefix';
-  path: string;
-  handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+interface DevinAdapterOptions {
+  /** 当前连接配置；每次操作时调用以获取最新值。 */
+  options: () => DevinConnectionOptions;
 }
-interface WebServerService {
-  register(route: WebRoute): () => void;
+declare class DevinAdapter extends LlmAdapter {
+  private readonly config;
+  private cachedClient;
+  private cachedClientKey;
+  private cachedModels;
+  private modelsExpiry;
+  private static readonly MODELS_CACHE_TTL_MS;
+  constructor(options: DevinAdapterOptions);
+  /** 当前连接配置（每次调用读取最新值）。 */
+  private conn;
+  /** 获取或重建 Connect client（baseUrl/token/proxy 变更时自动重建）。 */
+  private client;
+  providerInfo(_provider: string): LlmProviderInfo;
+  listModels(_provider: string): Promise<readonly LlmModelInfo[]>;
+  resolveModel(_provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
+  /**
+   * 解析当前可用的模型目录。
+   *
+   * 优先从 Devin 服务器动态获取（GetCascadeModelConfigs），带 5 分钟 TTL 缓存；
+   * 网络失败时 fallback 到配置的静态模型列表。
+   * 用户显式配置的 model 即使不在服务器返回的列表中也会被合并进来。
+   */
+  private resolveModelCatalog;
+  /**
+   * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
+   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens / description。
+   */
+  private fetchModelCatalog;
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+  private buildRequest;
+  private convertMessage;
+  private promptForContent;
 }
-interface CordisContext {
-  webServer: WebServerService;
-  effect<T>(cleanup: T | (() => T | void), name?: string): T;
+//#endregion
+//#region src/adapter/credentials.d.ts
+/**
+ * Devin CLI credentials.toml 的平台相关路径。
+ * 支持环境变量 DEVIN_CREDENTIALS_PATH 覆盖。
+ */
+declare function devinCredentialsPath(): string;
+interface DevinSession {
+  /** windsurf_api_key，格式 devin-session-token$... */
+  apiKey: string;
+  /** api_server_url，默认 https://server.codeium.com */
+  apiServerUrl: string;
+  /** devin_api_url，可选 */
+  devinApiUrl?: string;
 }
 /**
- * Devin Bridge 网关服务。激活时注册 /v1/* 路由到 ctx.webServer。
- * 配置通过 schemastery 校验后传入。
+ * 尝试从 Devin CLI 的 credentials.toml 读取 session。
+ * 文件不存在或格式无效时返回 undefined，不抛异常。
  */
-declare class DevinBridgeGateway {
-  private config;
-  private adapter;
-  private ctx;
-  constructor(ctx: CordisContext, config: DevinBridgeConfig);
-  private handleChat;
-  private handleStreamResponse;
-  private handleNonStreamResponse;
-  private handleModels;
-  private checkAuth;
-  private sendError;
-  private sendAuthError;
-}
+declare function readDevinSession(options?: {
+  credentialsPath?: string;
+}): DevinSession | undefined;
 //#endregion
 //#region src/index.d.ts
-/** Cordis 插件名称，与 cordis.patch.yml 中的 name 一致。 */
 declare const name = "dsh-plugin-devin-bridge";
-/**
- * schemastery 配置 schema。
- * dsh 在加载插件时用 schemastery 校验 cordis.patch.yml 中的 config 字段。
- */
-declare const Config: {
-  readonly baseUrl: {
-    readonly type: "string";
-    readonly required: true;
-    readonly description: "Devin Connect 服务地址";
-  };
-  readonly token: {
-    readonly type: "string";
-    readonly required: true;
-    readonly description: "Devin session token (devin-session-token$...)";
-  };
-  readonly model: {
-    readonly type: "string";
-    readonly required: false;
-    readonly default: "glm-5-2";
-    readonly description: "默认模型 UID";
-  };
-  readonly proxy: {
-    readonly type: "string";
-    readonly required: false;
-    readonly default: "";
-    readonly description: "可选代理地址 (http/https/socks5)";
-  };
-  readonly forceHttp1: {
-    readonly type: "boolean";
-    readonly required: false;
-    readonly default: true;
-    readonly description: "强制 HTTP/1.1";
-  };
-  readonly apiKey: {
-    readonly type: "string";
-    readonly required: false;
-    readonly default: "";
-    readonly description: "/v1/* 接口访问密钥；留空不鉴权";
-  };
-};
-/**
- * 插件启动入口。Harness 加载插件时调用。
- * @param ctx - Cordis 上下文，包含 ctx.webServer 等 service
- * @param config - 经 schemastery 校验后的配置
- */
-declare function apply(ctx: {
-  webServer: {
-    register(route: {
-      kind: 'exact' | 'prefix';
-      path: string;
-      handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void | Promise<void>;
-    }): () => void;
-  };
-  effect<T>(cleanup: T | (() => T | void), name?: string): T;
-}, config: DevinBridgeConfig): void;
+declare const inject: string[];
+interface Config {
+  /**
+   * Devin session token，格式 devin-session-token$<...>。
+   * 留空时自动从 Devin CLI 的 credentials.toml 读取（`devin auth login` 写入）。
+   */
+  token: string;
+  /** Devin Connect 端点，默认 https://server.codeium.com。 */
+  baseUrl: string;
+  /** 可选出站代理 URL（http/https/socks5）。 */
+  proxy: string;
+  /** 强制 HTTP/1.1 连接 Devin，默认 true。 */
+  forceHttp1: boolean;
+  /** 默认上下文窗口，默认 128000。 */
+  defaultContextWindow: number;
+  /** 默认最大输出 token，默认 16384。 */
+  defaultMaxTokens: number;
+  /** 可用模型列表。 */
+  models: DevinCatalogModel[];
+  /** 重试策略。 */
+  retryPolicy: RetryPolicyConfig;
+}
+declare const Config: z<Config>;
+declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, type DevinBridgeConfig, DevinBridgeGateway, apply, name };
+export { Config, DevinAdapter, type DevinAdapterOptions, type DevinCatalogModel, type DevinConnectionOptions, type DevinSession, apply, devinCredentialsPath, inject, name, readDevinSession };
 //# sourceMappingURL=index.d.ts.map

@@ -1,20 +1,39 @@
 # dsh-plugin-devin-bridge bundle patch
 #
-# 把 Devin Connect 反代为 OpenAI Chat Completions 兼容协议，挂载
-# /v1/chat/completions 与 /v1/models 路由到 ctx.webServer。
+# 把 Devin Connect 注册为 dsh LLM 的 `devin` provider route，
+# 让 dsh 内部的 agent loop 能使用 Devin 托管的模型。
 #
-# config 通过 schemastery 校验，用户在 profile 中填入真实 token：
-#   token:  devin-session-token$...
-#   model:  glm-5-2 | swe-1-7
-#   apiKey: 可选，保护 /v1/* 接口
+# token 留空时自动从 Devin CLI 的 credentials.toml 读取（`devin auth login` 写入），
+# 也可通过 dsh 设置面板动态配置。
+#   models: 可选，默认包含 glm-5-2 和 swe-1-7
 
 - insert:
     - id: devin-bridge
       name: dsh-plugin-devin-bridge
-      config:
-        baseUrl: "https://server.codeium.com"
-        token: ""
-        model: "glm-5-2"
-        proxy: ""
-        forceHttp1: true
-        apiKey: ""
+    config:
+      token: ""
+      baseUrl: "https://server.codeium.com"
+      proxy: ""
+      forceHttp1: true
+      defaultContextWindow: 128000
+      defaultMaxTokens: 16384
+      models:
+        - id: "glm-5-2"
+          name: "GLM-5.2"
+          description: "Devin-hosted GLM-5.2 reasoning model"
+          contextWindow: 128000
+          maxTokens: 16384
+          supportsImages: false
+        - id: "swe-1-7"
+          name: "SWE-1.7"
+          description: "Devin-hosted SWE-1.7 coding model with vision support"
+          contextWindow: 128000
+          maxTokens: 16384
+          supportsImages: true
+      retryPolicy:
+        mode: normal
+        maxRetries: 3
+        backoff:
+          initialDelayMs: 500
+          maxDelayMs: 10000
+          jitterRatio: 0.1
