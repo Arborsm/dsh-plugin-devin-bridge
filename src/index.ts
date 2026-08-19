@@ -36,26 +36,18 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
   {
     id: 'glm-5-2',
     name: 'GLM-5.2 High',
-    description: 'Devin-hosted GLM-5.2 reasoning model (High effort, promo free)',
+    description: 'Devin-hosted GLM-5.2 reasoning model',
     contextWindow: 200_000,
     maxTokens: 200_000,
     supportsImages: false,
-    family: 'GLM-5.2',
-    effort: 'High',
-    isFree: true,
-    creditMultiplier: 1.5,
   },
   {
     id: 'swe-1-7-medium',
     name: 'SWE-1.7 Medium',
-    description: 'Devin-hosted SWE-1.7 coding model (Kimi K2.7 Code base, Medium effort, promo free)',
+    description: 'Devin-hosted SWE-1.7 coding model (Kimi K2.7 Code base, RL post-trained)',
     contextWindow: 262_000,
     maxTokens: 262_000,
     supportsImages: true,
-    family: 'SWE-1.7',
-    effort: 'Medium',
-    isFree: true,
-    creditMultiplier: 3,
   },
 ]
 
@@ -90,11 +82,6 @@ const catalogModel: z<DevinCatalogModel> = z.object({
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
   supportsImages: z.boolean(),
-  family: z.string(),
-  effort: z.string(),
-  isPremium: z.boolean(),
-  isFree: z.boolean(),
-  creditMultiplier: z.number().step(0.01),
 })
 
 export const Config: z<Config> = z.object({

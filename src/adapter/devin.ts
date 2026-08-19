@@ -54,16 +54,6 @@ export interface DevinCatalogModel {
   contextWindow?: number
   maxTokens?: number
   supportsImages?: boolean
-  /** 模型系列标签（如 "GLM-5.2", "SWE-1.7"），从 model_family_metadata 提取。 */
-  family?: string
-  /** 思考等级标签（如 "High", "Max", "Medium", "No Thinking"），从 label 解析。 */
-  effort?: string
-  /** 是否需要付费 plan。 */
-  isPremium?: boolean
-  /** 是否当前处于促销免费期（promo_status.is_active）。 */
-  isFree?: boolean
-  /** 信用倍率，用于排序和展示。 */
-  creditMultiplier?: number
 }
 
 export interface DevinConnectionOptions {
@@ -86,42 +76,6 @@ export interface DevinAdapterOptions {
 // ─── DevinAdapter ───────────────────────────────────────────────────────────
 
 const PROVIDER = 'devin'
-
-/** 从 label 解析 effort 标签（如 "GLM-5.2 High" → "High"）。 */
-function parseEffortFromLabel(label: string): string | undefined {
-  const match = label.match(/\b(Max|High|Medium|Low|No Thinking|Lightning)\b/i)
-  return match?.[0]
-}
-
-/** 格式化 discovered model 的显示名，带 family/effort/free 标记。 */
-function formatDiscoveredName(m: DevinCatalogModel): string {
-  const parts: string[] = []
-  if (m.name) parts.push(m.name)
-  if (m.isFree) parts.push('[Free]')
-  else if (m.isPremium) parts.push('[Premium]')
-  if (m.creditMultiplier && m.creditMultiplier > 0) parts.push(`(${m.creditMultiplier}x)`)
-  return parts.join(' ')
-}
-
-/** 从 discovered name 解析原始 label（去掉 [Free]/[Premium]/(Nx) 后缀）。 */
-export function parseLabelFromDiscoveredName(name: string): string {
-  return name.replace(/\s*\[(?:Free|Premium)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim()
-}
-
-/** 从 label 解析 family 和 effort。 */
-export function parseFamilyAndEffort(label: string): { family?: string; effort?: string } {
-  const effort = parseEffortFromLabel(label)
-  // family = label 去掉 effort 后的部分
-  let family = label
-  if (effort) {
-    family = label.replace(new RegExp(`\\s*${effort}\\s*`, 'i'), '').trim()
-  }
-  // 去掉 "Lightning" 后缀也作为 effort
-  if (family.includes('Lightning')) {
-    family = family.replace(/\s*Lightning\s*/i, '').trim()
-  }
-  return { ...family ? { family } : {}, ...effort ? { effort } : {} }
-}
 
 export class DevinAdapter extends LlmAdapter {
   private readonly config: DevinAdapterOptions
@@ -206,8 +160,7 @@ export class DevinAdapter extends LlmAdapter {
     const dynamic = await this.fetchModelCatalog(signal)
     return dynamic.map((m) => ({
       id: m.id,
-      // name 里带 family + effort + free 标记，方便用户在 UI 里识别
-      name: formatDiscoveredName(m),
+      ...m.name ? { name: m.name } : {},
       ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
       ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
     }))
@@ -217,11 +170,8 @@ export class DevinAdapter extends LlmAdapter {
 
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
-   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
-   * description / family / effort / isPremium / isFree / creditMultiplier。
-   *
-   * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
-   * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。
+   * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens。
+   * effort/thinking 是 provider 端通过不同 model_uid 实现的，我们这边只管添加模型。
    */
   private async fetchModelCatalog(signal?: AbortSignal): Promise<DevinCatalogModel[]> {
     const c = this.conn()
@@ -244,20 +194,12 @@ export class DevinAdapter extends LlmAdapter {
       const uid = config.modelUid
       if (!uid || seen.has(uid)) continue
       seen.add(uid)
-      const family = config.modelFamilyMetadata?.modelFamilyLabel || undefined
-      const effort = parseEffortFromLabel(config.label)
-      const isFree = config.promoStatus?.isActive === true
       models.push({
         id: uid,
         ...config.label ? { name: config.label } : {},
         ...config.description ? { description: config.description } : {},
         ...config.maxTokens > 0 ? { contextWindow: config.maxTokens, maxTokens: config.maxTokens } : {},
         supportsImages: config.supportsImages,
-        ...family ? { family } : {},
-        ...effort ? { effort } : {},
-        isPremium: config.isPremium,
-        ...isFree ? { isFree: true } : {},
-        ...config.creditMultiplier > 0 ? { creditMultiplier: config.creditMultiplier } : {},
       })
     }
     return models
