@@ -417,7 +417,7 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
           name: c.name ?? prev?.name ?? c.id,
           ...c.description ?? prev?.description ? { description: c.description ?? prev?.description } : {},
           contextWindow: c.contextWindow ?? prev?.contextWindow ?? 0,
-          maxTokens: c.maxTokens ?? prev?.maxTokens ?? 128000,
+          maxTokens: c.maxTokens ?? prev?.maxTokens ?? 65536,
           supportsImages: c.supportsImages ?? c.inputModalities?.includes('image') ?? prev?.supportsImages ?? false,
           ...c.isPromo ?? prev?.isPromo ? { isPromo: true } : {},
           ...c.isPremium ?? prev?.isPremium ? { isPremium: true } : {},

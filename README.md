@@ -46,17 +46,17 @@ All fields are optional — the plugin works out of the box once a token is avai
     proxy: ""  # optional: outbound proxy URL (http/https/socks5)
     forceHttp1: true  # optional: force HTTP/1.1 (default true)
     defaultContextWindow: 128000  # optional: fallback context window
-    defaultMaxTokens: 128000  # optional: fallback max output tokens
+    defaultMaxTokens: 65536  # optional: fallback max output tokens
     models:  # optional; defaults to swe-2 and swe-2-flash
       - id: "swe-2"
         name: "SWE-2"
         contextWindow: 262000
-        maxTokens: 128000
+        maxTokens: 65536
         supportsImages: true
       - id: "swe-2-flash"
         name: "SWE-2 Flash"
         contextWindow: 262144
-        maxTokens: 128000
+        maxTokens: 65536
         supportsImages: false
     retryPolicy:  # optional
       mode: normal

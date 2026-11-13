@@ -174,7 +174,7 @@ interface DevinBridgeConfig {
   forceHttp1: boolean;
   /** 默认上下文窗口，默认 128000。 */
   defaultContextWindow: number;
-  /** 默认最大输出 token，默认 128000。 */
+  /** 默认最大输出 token，默认 65536。 */
   defaultMaxTokens: number;
   /** 可用模型列表。 */
   models: DevinCatalogModel[];
