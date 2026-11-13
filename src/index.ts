@@ -38,6 +38,8 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
     maxTokens: 128_000,
     supportsImages: true,
     family: 'SWE-2',
+    tiers: { high: 'swe-2-high', medium: 'swe-2-medium', max: 'swe-2-max' },
+    defaultEffort: 'high',
     creditMultiplier: 9,
   },
   {
@@ -92,6 +94,10 @@ const catalogModel = z.object({
   maxTokens: z.number().step(1).min(1),
   supportsImages: z.boolean(),
   family: z.string(),
+  /** family 档位表：effort id → 上游真实 model_uid（采纳时持久化）。 */
+  tiers: z.dict(z.string()),
+  /** family 默认档位的 effort id；dsh 滑块默认值。 */
+  defaultEffort: z.string(),
   isPremium: z.boolean(),
   isPromo: z.boolean(),
   creditMultiplier: z.number().step(0.01),
@@ -248,6 +254,8 @@ export function apply(ctx: Context, config: Config): void {
   const service = {
     quota: (): Promise<DevinQuota> => fetchWithConn(false),
     refreshQuota: (): Promise<DevinQuota> => fetchWithConn(true),
+    // 完整目录（family 合并 + tiers 档位表）；比 remote.llm.discoverModels 信息全。
+    catalog: (): Promise<DevinCatalogModel[]> => adapter.catalog(),
   }
   Object.defineProperty(service, 'typertRemote', {
     configurable: false,

@@ -52,6 +52,12 @@ const quotaCodec = codec('DevinQuota', (value) => {
   return result
 })
 
+const catalogCodec = codec('DevinCatalog', (value) => {
+  if (!Array.isArray(value)) throw new TypeError('devin catalog must be an array')
+  for (const item of value) requireObject(item, 'devin catalog entry')
+  return value as Record<string, unknown>[]
+})
+
 /** Wires of the `devin` namespace, in service order. */
 export const DEVIN_INVOCATIONS = [
   {
@@ -73,6 +79,16 @@ export const DEVIN_INVOCATIONS = [
     parameters: [],
     result: quotaCodec,
     description: 'Force-refresh the account quota, bypassing the upstream cache.',
+  },
+  {
+    id: 'dsh-plugin-devin-bridge#devin/catalog',
+    service: 'devin',
+    namespace: 'devin',
+    method: 'catalog',
+    invocation: { kind: 'direct' as const },
+    parameters: [],
+    result: catalogCodec,
+    description: 'Family-merged model catalog with effort tier maps, for settings adoption.',
   },
 ]
 

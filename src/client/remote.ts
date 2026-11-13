@@ -18,10 +18,27 @@ export interface DevinQuotaPayload {
   stale: boolean
 }
 
+/** Family-merged catalog entry returned by `remote.devin.catalog()`. */
+export interface DevinCatalogEntry {
+  id: string
+  name?: string
+  description?: string
+  contextWindow?: number
+  maxTokens?: number
+  supportsImages?: boolean
+  family?: string
+  tiers?: Record<string, string>
+  defaultEffort?: string
+  isPremium?: boolean
+  isPromo?: boolean
+  creditMultiplier?: number
+}
+
 /** The namespace service the gateway installs as `remote.devin`. */
 export interface DevinRemote {
   quota(): Promise<RemoteResult<DevinQuotaPayload>>
   refreshQuota(): Promise<RemoteResult<DevinQuotaPayload>>
+  catalog(): Promise<RemoteResult<DevinCatalogEntry[]>>
 }
 
 const passthrough = (name: string) => ({
@@ -30,20 +47,24 @@ const passthrough = (name: string) => ({
   create: () => ({ parse: <T>(value: unknown): T => value as T }),
 })
 
-const descriptor = (method: string) => ({
+const descriptor = (method: string, resultName = 'DevinQuota') => ({
   id: `dsh-plugin-devin-bridge#devin/${method}`,
   service: 'devin',
   namespace: 'devin',
   method,
   invocation: { kind: 'direct' as const },
   parameters: [],
-  result: passthrough('DevinQuota'),
+  result: passthrough(resultName),
 })
 
 /** Mirrors src/typert.ts — method names must match the Host manifest. */
 export const CONTRIBUTION = {
   package: 'dsh-plugin-devin-bridge',
-  descriptors: [descriptor('quota'), descriptor('refreshQuota')],
+  descriptors: [
+    descriptor('quota'),
+    descriptor('refreshQuota'),
+    descriptor('catalog', 'DevinCatalog'),
+  ],
 }
 
 /**

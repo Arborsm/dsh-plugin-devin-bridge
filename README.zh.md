@@ -77,7 +77,7 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 
 ## 功能特性
 
-- **动态模型目录**：通过 `GetCascadeModelConfigs` RPC 从 Devin 服务器实时拉取可用模型列表，读取 `model_family_metadata` 将推理档位（`high`/`medium`/`max`/`none`）合并为同一基础模型，并识别 fast-mode 变体、promo/premium 标记、信用倍率和图片支持。
+- **动态模型目录**：通过 `GetCascadeModelConfigs` RPC 从 Devin 服务器实时拉取可用模型列表，读取 `model_family_metadata` 将推理档位（`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）合并为同一基础模型，并识别 fast-mode 变体、promo/premium 标记、信用倍率和图片支持。
 - **推理档位滑块**：适配器在每个模型上暴露 dsh 的 `reasoning.efforts`，通过目录档位表把选中的 effort 解析为具体的 Devin `model_uid`（目录缺失时回退内置后缀映射）。
 - **文本流式输出**：完整的文本增量流式传输与索引化 block 组装
 - **推理/思考**：推理内容映射到 dsh 的 `reasoning` block 类型；thinking 签名经 `finish.replayState` 往返保存，assistant 历史回放时携带有效签名。

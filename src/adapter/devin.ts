@@ -84,6 +84,10 @@ export interface DevinCatalogModel {
   fastMode?: boolean
   /** 是否该 family 的默认档位（is_default_model_in_family）。 */
   isDefaultInFamily?: boolean
+  /** family 档位表：effort id → 上游真实 model_uid（采纳时持久化）。 */
+  tiers?: Record<string, string>
+  /** family 默认档位的 effort id（如 "high"）；dsh 滑块默认值。 */
+  defaultEffort?: string
   /** 是否需要付费 plan。 */
   isPremium?: boolean
   /** 是否当前处于促销期（promo_status.is_active）。 */
@@ -128,18 +132,24 @@ const PROVIDER = 'devin'
 
 /** dsh effort id → Devin model_uid 候选后缀（目录不可用时的回退，按序尝试）。 */
 const EFFORT_SUFFIX: Record<string, readonly string[]> = {
-  high: ['', '-high'],       // glm-5-2=High / swe-2-high
-  medium: ['-medium'],
-  max: ['-max'],
   none: ['-none'],
+  minimal: ['-minimal'],
+  low: ['-low'],
+  medium: ['-medium'],
+  high: ['', '-high'],       // glm-5-2=High / swe-2-high
+  xhigh: ['-xhigh'],
+  max: ['-max'],
 }
 
 /** dsh reasoning effort 列表（目录不可用时展示的全部滑块档位）。 */
 const REASONING_EFFORTS = [
-  { id: ReasoningEffortId('high'), name: 'High' },
-  { id: ReasoningEffortId('medium'), name: 'Medium' },
-  { id: ReasoningEffortId('max'), name: 'Max' },
   { id: ReasoningEffortId('none'), name: 'No Thinking' },
+  { id: ReasoningEffortId('minimal'), name: 'Minimal' },
+  { id: ReasoningEffortId('low'), name: 'Low' },
+  { id: ReasoningEffortId('medium'), name: 'Medium' },
+  { id: ReasoningEffortId('high'), name: 'High' },
+  { id: ReasoningEffortId('xhigh'), name: 'Extra High' },
+  { id: ReasoningEffortId('max'), name: 'Max' },
 ] as const
 
 /** 规范化 catalog effort 名到 dsh effort id（"No Thinking" → "none"）。 */
@@ -165,34 +175,86 @@ function familyTiers(models: readonly DevinCatalogModel[]): Map<string, Map<stri
 }
 
 /**
+ * 把动态目录按 family 合并：每个 family 取一个代表成员（默认档 > promo > 首个），
+ * 并汇总成员档位表（effort id → uid，跳过 fast mode 变体）。
+ */
+function mergeFamilies(models: readonly DevinCatalogModel[]): {
+  member: DevinCatalogModel
+  tiers: Record<string, string>
+  defaultEffort?: string
+}[] {
+  const byFamily = new Map<string, DevinCatalogModel[]>()
+  for (const m of models) {
+    const fam = m.family ?? m.id
+    const list = byFamily.get(fam) ?? []
+    list.push(m)
+    byFamily.set(fam, list)
+  }
+  return [...byFamily.values()].map((members) => {
+    const tiers: Record<string, string> = {}
+    for (const m of members) {
+      if (!m.effort || m.fastMode) continue
+      const e = normalizeEffortName(m.effort)
+      if (!tiers[e]) tiers[e] = m.id
+    }
+    const member = members.find((m) => m.isDefaultInFamily && !m.fastMode)
+      ?? members.find((m) => m.isPromo && !m.fastMode)
+      ?? members.find((m) => !m.fastMode)
+      ?? members[0]!
+    return {
+      member,
+      tiers,
+      ...member.effort ? { defaultEffort: normalizeEffortName(member.effort) } : {},
+    }
+  })
+}
+
+/**
  * 把 base model id + reasoningEffort 映射到 Devin 实际 model_uid。
- * 如 glm-5-2 + max → glm-5-2-max，swe-1-7 + medium → swe-1-7-medium。
- * 优先走目录档位表；失败回退内置后缀映射；都不命中用 base id。
+ * 如 swe-2 + max → swe-2-max，swe-1-7 + medium → swe-1-7-medium。
+ * 优先用采纳时持久化的 tiers 表（effort id → uid），其次 family 成员档位表，
+ * 最后回退内置后缀映射；都不命中用 base id。
  */
 function resolveModelUid(baseId: string, effort: string | undefined, models: readonly DevinCatalogModel[]): string {
   // options.model 理论上是不带 provider 前缀的裸 id；防御性剥掉 "xxx/" 前缀，
   // 避免路由形态变化时把 "devin/swe-2-high" 原样发给上游。
   const bareId = baseId.includes('/') ? baseId.slice(baseId.lastIndexOf('/') + 1) : baseId
-  const base = models.find((m) => m.id === bareId || toBaseModelId(m.id) === bareId)
+  const configured = models.find((m) => m.id === bareId)
+  // 兼容旧版采纳的档位 uid 条目（如 swe-2-high 作为模型 id 存进配置）。
+  const legacy = configured ?? models.find((m) => toBaseModelId(m.id) === bareId)
   if (effort) {
-    if (base?.family) {
-      const tierUid = familyTiers(models).get(base.family)?.get(normalizeEffortName(effort))
-      if (tierUid) return tierUid
-    }
-    for (const suffix of EFFORT_SUFFIX[normalizeEffortName(effort)] ?? []) {
-      const mapped = suffix ? `${bareId}${suffix}` : bareId
-      if (models.some((m) => m.id === mapped)) return mapped
-    }
+    const e = normalizeEffortName(effort)
+    const tierUid = configured?.tiers?.[e]
+      ?? (legacy?.family ? familyTiers(models).get(legacy.family)?.get(e) : undefined)
+      ?? EFFORT_SUFFIX[e]?.map((suffix) => `${bareId}${suffix}`).find((id) => models.some((m) => m.id === id))
+    if (tierUid) return tierUid
   }
-  // uid 存在就直接用（如 swe-2-high 本身就是真实 uid）
-  if (models.some((m) => m.id === bareId)) return bareId
   // base id 非真实 uid（如 swe-2 只有 swe-2-high/medium/max 档位）：
-  // 用 family 的默认档位
-  if (base?.family) {
-    const def = models.find((m) => m.family === base.family && m.isDefaultInFamily && !m.fastMode)
+  // 落回持久化档位的默认档 / family 默认档 / 裸 id。
+  if (configured?.tiers) {
+    return configured.tiers[configured.defaultEffort ?? 'high']
+      ?? configured.tiers['high']
+      ?? Object.values(configured.tiers)[0]!
+  }
+  if (models.some((m) => m.id === bareId)) return bareId
+  if (legacy?.family) {
+    const def = models.find((m) => m.family === legacy.family && m.isDefaultInFamily && !m.fastMode)
     if (def) return def.id
   }
   return bareId
+}
+
+/**
+ * family 默认成员的 uid 减去自身 effort 后缀得到对外暴露的 base model id。
+ * 如 swe-2-high（effort=high）→ swe-2；swe-1-7（effort=max，无后缀）→ swe-1-7。
+ */
+function familyBaseId(member: DevinCatalogModel): string {
+  let id = member.id
+  if (member.effort) {
+    const suffix = `-${normalizeEffortName(member.effort)}`
+    if (id.toLowerCase().endsWith(suffix)) id = id.slice(0, -suffix.length)
+  }
+  return id.replace(/-1m$/i, '')
 }
 
 /** 从 label 解析 effort 标签（如 "GLM-5.2 High" → "High"），目录缺 family metadata 时回退。 */
@@ -302,10 +364,14 @@ export class DevinAdapter extends LlmAdapter {
   private modelInfo(c: DevinConnectionOptions, provider: string, model: string): LlmResolvedModelInfo {
     const configured = c.models.find((m) => m.id === model)
     const contextWindow = configured?.contextWindow ?? c.defaultContextWindow
-    // 目录里该 family 实际存在的档位优先；缺目录信息时给全部四个档位
-    const tiers = configured?.family ? familyTiers(c.models).get(configured.family) : undefined
-    const efforts = tiers && tiers.size > 0
-      ? REASONING_EFFORTS.filter((e) => tiers.has(e.id as unknown as string))
+    // 优先用采纳时持久化的 tiers；其次按 family 成员推；缺目录信息给全部四个档位
+    const tierSet = configured?.tiers
+      ? new Set(Object.keys(configured.tiers))
+      : configured?.family
+        ? familyTiers(c.models).get(configured.family)
+        : undefined
+    const efforts = tierSet && tierSet.size > 0
+      ? REASONING_EFFORTS.filter((e) => tierSet.has(e.id as unknown as string))
       : REASONING_EFFORTS
     return {
       provider,
@@ -318,7 +384,7 @@ export class DevinAdapter extends LlmAdapter {
       // 暴露 effort 滑块给 dsh；插件内部在 stream 时映射到实际 model_uid
       reasoning: {
         efforts,
-        defaultEffort: ReasoningEffortId('high'),
+        defaultEffort: ReasoningEffortId(configured?.defaultEffort ?? 'high'),
       },
     }
   }
@@ -357,27 +423,35 @@ export class DevinAdapter extends LlmAdapter {
       ? { ...c, baseUrl: draft.baseURL ?? c.baseUrl, token: draft.apiKey ?? c.token }
       : c
     const dynamic = await this.fetchModelCatalog(conn, signal)
-    // 按 family 分组，每个 family 只留默认档位的那个
-    const byFamily = new Map<string, DevinCatalogModel>()
-    for (const m of dynamic) {
-      const fam = m.family ?? m.id
-      const existing = byFamily.get(fam)
-      if (!existing) {
-        byFamily.set(fam, m)
-        continue
-      }
-      // 优先选 family 默认档位；其次选 promo 的
-      if ((m.isDefaultInFamily && !existing.isDefaultInFamily) || (m.isPromo && !existing.isPromo && !existing.isDefaultInFamily)) {
-        byFamily.set(fam, m)
-      }
-    }
-    return [...byFamily.values()].map((m) => ({
-      // id 用 base id：去掉 effort 后缀（-max, -medium, -none, -1m 等）
-      id: toBaseModelId(m.id),
-      name: formatDiscoveredName(m),
+    return mergeFamilies(dynamic).map(({ member: m }) => ({
+      // 对外暴露 base id + family 名；effort 走 dsh 滑块
+      id: familyBaseId(m),
+      name: formatDiscoveredName(m.family ? { ...m, name: m.family } : m),
       ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
       ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
       inputModalities: m.supportsImages ? ['text' as const, 'image' as const] : ['text' as const],
+    }))
+  }
+
+  /**
+   * 供 remote.devin 使用：family 合并后的完整目录条目，
+   * 带 tiers（effort→uid）与 defaultEffort，供设置页采纳进配置。
+   */
+  async catalog(signal?: AbortSignal): Promise<DevinCatalogModel[]> {
+    const dynamic = await this.fetchModelCatalog(this.conn(), signal)
+    return mergeFamilies(dynamic).map(({ member: m, tiers, defaultEffort }) => ({
+      id: familyBaseId(m),
+      name: m.family ?? m.name ?? m.id,
+      ...m.description ? { description: m.description } : {},
+      ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
+      ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
+      supportsImages: m.supportsImages,
+      ...m.family ? { family: m.family } : {},
+      ...Object.keys(tiers).length > 0 ? { tiers } : {},
+      ...defaultEffort ? { defaultEffort } : {},
+      isPremium: m.isPremium,
+      isPromo: m.isPromo,
+      ...m.creditMultiplier !== undefined ? { creditMultiplier: m.creditMultiplier } : {},
     }))
   }
 

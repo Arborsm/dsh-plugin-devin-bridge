@@ -18,6 +18,10 @@ interface DevinCatalogModel {
   fastMode?: boolean;
   /** 是否该 family 的默认档位（is_default_model_in_family）。 */
   isDefaultInFamily?: boolean;
+  /** family 档位表：effort id → 上游真实 model_uid（采纳时持久化）。 */
+  tiers?: Record<string, string>;
+  /** family 默认档位的 effort id（如 "high"）；dsh 滑块默认值。 */
+  defaultEffort?: string;
   /** 是否需要付费 plan。 */
   isPremium?: boolean;
   /** 是否当前处于促销期（promo_status.is_active）。 */
@@ -79,6 +83,11 @@ declare class DevinAdapter extends LlmAdapter {
     baseURL?: string;
     apiKey?: string;
   }, signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;
+  /**
+   * 供 remote.devin 使用：family 合并后的完整目录条目，
+   * 带 tiers（effort→uid）与 defaultEffort，供设置页采纳进配置。
+   */
+  catalog(signal?: AbortSignal): Promise<DevinCatalogModel[]>;
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
@@ -178,6 +187,8 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     maxTokens?: number | null | undefined;
     supportsImages?: boolean | null | undefined;
     family?: string | null | undefined;
+    tiers?: import("@deepseek-ai/cosmokit").Dict<string, string> | null | undefined;
+    defaultEffort?: string | null | undefined;
     isPremium?: boolean | null | undefined;
     isPromo?: boolean | null | undefined;
     creditMultiplier?: number | null | undefined;
@@ -189,6 +200,10 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     maxTokens: z<number, number, "plain">;
     supportsImages: z<boolean, boolean, "plain">;
     family: z<string, string, "plain">;
+    /** family 档位表：effort id → 上游真实 model_uid（采纳时持久化）。 */
+    tiers: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "plain">;
+    /** family 默认档位的 effort id；dsh 滑块默认值。 */
+    defaultEffort: z<string, string, "plain">;
     isPremium: z<boolean, boolean, "plain">;
     isPromo: z<boolean, boolean, "plain">;
     creditMultiplier: z<number, number, "plain">;
@@ -211,6 +226,8 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     maxTokens?: number | null | undefined;
     supportsImages?: boolean | null | undefined;
     family?: string | null | undefined;
+    tiers?: import("@deepseek-ai/cosmokit").Dict<string, string> | null | undefined;
+    defaultEffort?: string | null | undefined;
     isPremium?: boolean | null | undefined;
     isPromo?: boolean | null | undefined;
     creditMultiplier?: number | null | undefined;
@@ -222,6 +239,10 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     maxTokens: z<number, number, "plain">;
     supportsImages: z<boolean, boolean, "plain">;
     family: z<string, string, "plain">;
+    /** family 档位表：effort id → 上游真实 model_uid（采纳时持久化）。 */
+    tiers: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "plain">;
+    /** family 默认档位的 effort id；dsh 滑块默认值。 */
+    defaultEffort: z<string, string, "plain">;
     isPremium: z<boolean, boolean, "plain">;
     isPromo: z<boolean, boolean, "plain">;
     creditMultiplier: z<number, number, "plain">;

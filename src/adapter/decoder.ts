@@ -214,10 +214,13 @@ export class DevinStreamDecoder {
       chunks.push({ type: 'usage', usage: this.currentUsage })
     }
 
+    const replay = this.replayEnvelope()
     chunks.push({
       type: 'finish',
       reason: mapFinishReason(this.stopReason, this.hasStopReason),
-      replayState: this.replayEnvelope(),
+      // own `undefined` 属性会破坏 lossless JSON 校验（accumulator 直接抛错），
+      // 无 replay 元数据时省略该键。
+      ...(replay !== undefined ? { replayState: replay } : {}),
     })
     return chunks
   }
@@ -250,7 +253,10 @@ export class DevinStreamDecoder {
     if (Object.keys(response).length === 0 && !hasMeta) return undefined
     return {
       response,
-      ...hasMeta ? { blocks: this.blockMeta } : {},
+      // 空槽（tool-call 块无 replay 元数据）必须是 null：稀疏数组的洞和
+      // undefined 在 JSON.stringify 后都变 null，snapshot 校验视为有损直接抛错。
+      // map() 会跳过稀疏洞，必须用 Array.from 致密化。
+      ...hasMeta ? { blocks: Array.from(this.blockMeta, (m) => m ?? null) } : {},
     }
   }
 

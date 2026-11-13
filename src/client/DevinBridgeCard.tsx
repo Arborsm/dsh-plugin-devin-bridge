@@ -30,19 +30,29 @@ export interface DevinBridgeConfig {
     maxTokens?: number
     supportsImages?: boolean
     family?: string
+    tiers?: Record<string, string>
+    defaultEffort?: string
     isPremium?: boolean
     isPromo?: boolean
     creditMultiplier?: number
   }>
 }
 
-/** 从 discoverModels 返回的候选模型。 */
+/** 从 remote.devin.catalog 返回的候选模型（family 已合并）。 */
 interface DiscoveredModel {
   id: string
   name?: string
+  description?: string
   contextWindow?: number
   maxTokens?: number
   inputModalities?: readonly string[]
+  supportsImages?: boolean
+  family?: string
+  tiers?: Record<string, string>
+  defaultEffort?: string
+  isPremium?: boolean
+  isPromo?: boolean
+  creditMultiplier?: number
 }
 
 export interface QuotaSource {
@@ -401,19 +411,20 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
       const candidates = result.value ?? []
       const existing = new Map((value?.models ?? []).map((m) => [m.id, m]))
       const adopted = candidates.map((c) => {
-        const name = c.name ?? ''
-        const multMatch = name.match(/\(([\d.]+)x\)/)
         const prev = existing.get(c.id)
         return {
           id: c.id,
-          name: name.replace(/\s*\[(?:Free|Premium|Promo)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim() || c.id,
-          ...prev?.description ? { description: prev.description } : {},
+          name: c.name ?? prev?.name ?? c.id,
+          ...c.description ?? prev?.description ? { description: c.description ?? prev?.description } : {},
           contextWindow: c.contextWindow ?? prev?.contextWindow ?? 0,
           maxTokens: c.maxTokens ?? prev?.maxTokens ?? 128000,
-          supportsImages: c.inputModalities?.includes('image') ?? prev?.supportsImages ?? false,
-          ...name.includes('[Promo]') || prev?.isPromo ? { isPromo: true } : {},
-          ...name.includes('[Premium]') || prev?.isPremium ? { isPremium: true } : {},
-          ...multMatch ? { creditMultiplier: Number(multMatch[1]) } : prev?.creditMultiplier !== undefined ? { creditMultiplier: prev.creditMultiplier } : {},
+          supportsImages: c.supportsImages ?? c.inputModalities?.includes('image') ?? prev?.supportsImages ?? false,
+          ...c.isPromo ?? prev?.isPromo ? { isPromo: true } : {},
+          ...c.isPremium ?? prev?.isPremium ? { isPremium: true } : {},
+          ...c.creditMultiplier ?? prev?.creditMultiplier ? { creditMultiplier: c.creditMultiplier ?? prev?.creditMultiplier } : {},
+          ...c.family ? { family: c.family } : {},
+          ...c.tiers ? { tiers: c.tiers } : {},
+          ...c.defaultEffort ? { defaultEffort: c.defaultEffort } : {},
         }
       })
       const accepted = await form.set('models', adopted)

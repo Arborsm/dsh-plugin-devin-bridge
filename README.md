@@ -77,7 +77,7 @@ Once configured, dsh's model selector will show `Devin` as a provider with avail
 
 ## Features
 
-- **Dynamic model catalog**: Fetches the live model list from Devin via `GetCascadeModelConfigs` RPC, reading `model_family_metadata` to group reasoning-effort tiers (`high`/`medium`/`max`/`none`) under one base model and to detect fast-mode variants, promo flags, premium flags, credit multipliers, and image support.
+- **Dynamic model catalog**: Fetches the live model list from Devin via `GetCascadeModelConfigs` RPC, reading `model_family_metadata` to group reasoning-effort tiers (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) under one base model and to detect fast-mode variants, promo flags, premium flags, credit multipliers, and image support.
 - **Reasoning effort slider**: The adapter exposes dsh's `reasoning.efforts` on each model and resolves the selected effort to a concrete Devin `model_uid` via the catalog tier table (with a suffix-mapping fallback when catalog metadata is unavailable).
 - **Text streaming**: Full text delta streaming with indexed block assembly
 - **Reasoning/thinking**: Reasoning content mapped to dsh's `reasoning` block type; thinking signatures are round-tripped through `finish.replayState` so assistant history replays with valid signatures.

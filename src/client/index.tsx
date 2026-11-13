@@ -72,7 +72,9 @@ export function apply(ctx: ClientContext): void {
   const face = (embedded: boolean) => (): DevinBridgeCardProps => ({
     embedded,
     form: ctx.configForms.get(SETTINGS_NS),
-    discover: () => ctx.remote.llm.discoverModels(SETTINGS_NS, { provider: 'devin' }),
+    // 目录刷新走 remote.devin.catalog：带 family 档位表（effort→uid），
+    // remote.llm.discoverModels 的 LlmDiscoveredModel 形状放不下。
+    discover: () => devinRemote?.catalog() ?? unmounted(),
     remote: quotaProxy,
   })
 

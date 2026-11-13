@@ -17,7 +17,7 @@ interface TypertStrictCodec<T> {
   create(): TypertSchema<T>;
 }
 /** Wires of the `devin` namespace, in service order. */
-declare const DEVIN_INVOCATIONS: {
+declare const DEVIN_INVOCATIONS: ({
   id: string;
   service: string;
   namespace: string;
@@ -28,13 +28,24 @@ declare const DEVIN_INVOCATIONS: {
   parameters: never[];
   result: TypertStrictCodec<Record<string, unknown>>;
   description: string;
-}[];
+} | {
+  id: string;
+  service: string;
+  namespace: string;
+  method: string;
+  invocation: {
+    kind: "direct";
+  };
+  parameters: never[];
+  result: TypertStrictCodec<Record<string, unknown>[]>;
+  description: string;
+})[];
 /** The manifest the Typert loader registers for this package. */
 declare const TYPERT: {
   package: string;
   face: "host";
   schemas: never[];
-  invocations: {
+  invocations: ({
     id: string;
     service: string;
     namespace: string;
@@ -45,7 +56,18 @@ declare const TYPERT: {
     parameters: never[];
     result: TypertStrictCodec<Record<string, unknown>>;
     description: string;
-  }[];
+  } | {
+    id: string;
+    service: string;
+    namespace: string;
+    method: string;
+    invocation: {
+      kind: "direct";
+    };
+    parameters: never[];
+    result: TypertStrictCodec<Record<string, unknown>[]>;
+    description: string;
+  })[];
   model: {
     services: {
       description: string;
