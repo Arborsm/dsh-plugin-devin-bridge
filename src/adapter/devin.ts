@@ -168,26 +168,29 @@ function familyTiers(models: readonly DevinCatalogModel[]): Map<string, Map<stri
  * 优先走目录档位表；失败回退内置后缀映射；都不命中用 base id。
  */
 function resolveModelUid(baseId: string, effort: string | undefined, models: readonly DevinCatalogModel[]): string {
-  const base = models.find((m) => m.id === baseId || toBaseModelId(m.id) === baseId)
+  // options.model 理论上是不带 provider 前缀的裸 id；防御性剥掉 "xxx/" 前缀，
+  // 避免路由形态变化时把 "devin/swe-2-high" 原样发给上游。
+  const bareId = baseId.includes('/') ? baseId.slice(baseId.lastIndexOf('/') + 1) : baseId
+  const base = models.find((m) => m.id === bareId || toBaseModelId(m.id) === bareId)
   if (effort) {
     if (base?.family) {
       const tierUid = familyTiers(models).get(base.family)?.get(normalizeEffortName(effort))
       if (tierUid) return tierUid
     }
     for (const suffix of EFFORT_SUFFIX[normalizeEffortName(effort)] ?? []) {
-      const mapped = suffix ? `${baseId}${suffix}` : baseId
+      const mapped = suffix ? `${bareId}${suffix}` : bareId
       if (models.some((m) => m.id === mapped)) return mapped
     }
   }
   // uid 存在就直接用（如 swe-2-high 本身就是真实 uid）
-  if (models.some((m) => m.id === baseId)) return baseId
+  if (models.some((m) => m.id === bareId)) return bareId
   // base id 非真实 uid（如 swe-2 只有 swe-2-high/medium/max 档位）：
   // 用 family 的默认档位
   if (base?.family) {
     const def = models.find((m) => m.family === base.family && m.isDefaultInFamily && !m.fastMode)
     if (def) return def.id
   }
-  return baseId
+  return bareId
 }
 
 /** 从 label 解析 effort 标签（如 "GLM-5.2 High" → "High"），目录缺 family metadata 时回退。 */
@@ -247,7 +250,7 @@ export class DevinAdapter extends LlmAdapter {
         `  1. Set token in the settings panel to a "devin-session-token$..." value, or\n` +
         `  2. Run "devin auth login" to create ${hint}, or\n` +
         `  3. Set DEVIN_CREDENTIALS_PATH to a custom credentials.toml path`,
-        'AUTH',
+        'MISSING_CREDENTIAL',
       )
     }
     const key = `${c.baseUrl}\0${c.token}\0${c.proxy ?? ''}\0${c.forceHttp1}`

@@ -301,7 +301,10 @@ function connectErrorCode(message: string): BuiltinLlmFailureCode {
     out_of_range: 'INVALID_REQUEST',
     unimplemented: 'INVALID_REQUEST',
     unauthenticated: 'AUTH',
-    permission_denied: 'AUTH',
+    // 上游 permission_denied 多为"该账号无权使用此模型"，不是密钥失效；
+    // 映射成 MODEL_UNSUPPORTED 让原始消息透出（聊天 UI 对 AUTH 会
+    // 强制改写为“API 密钥无效”）。
+    permission_denied: 'MODEL_UNSUPPORTED',
     not_found: 'UNKNOWN_MODEL',
     resource_exhausted: 'RATE_LIMIT',
     deadline_exceeded: 'TIMEOUT',

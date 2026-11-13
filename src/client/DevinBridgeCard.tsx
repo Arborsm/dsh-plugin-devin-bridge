@@ -48,6 +48,8 @@ interface DiscoveredModel {
 export interface DevinBridgeCardProps {
   /** 插件管理器传入的视图模式；bundle 配置页固定 'page'。 */
   view?: 'summary' | 'page'
+  /** true = 插件详情页内嵌卡片（可折叠）；false = 设置侧栏独立页面（整页展开）。 */
+  embedded?: boolean
   form: ConfigForm<DevinBridgeConfig>
   /** 调用 Host 端注册的模型发现；返回 RemoteResult 包装的候选列表。 */
   discover: () => Promise<RemoteResult<DiscoveredModel[]>>
@@ -73,7 +75,7 @@ function groupCandidatesByFamily(models: DiscoveredModel[]): Array<{ family: str
   const groups = new Map<string, DiscoveredModel[]>()
   for (const m of models) {
     // name 格式: "GLM-5.2 High [Free] (1.5x)" → family = "GLM-5.2"
-    const rawLabel = (m.name ?? m.id).replace(/\s*\[(?:Free|Premium)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim()
+    const rawLabel = (m.name ?? m.id).replace(/\s*\[(?:Free|Premium|Promo)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim()
     // 去掉 effort 词（discoverModels 可能还带 effort 在 name 里）
     let family = rawLabel.replace(/\s*\b(Max|High|Medium|Low|No Thinking|Lightning)\b\s*/gi, '').trim()
     if (rawLabel.includes('Lightning') && !family.includes('Lightning')) {
@@ -99,7 +101,7 @@ function groupCandidatesByFamily(models: DiscoveredModel[]): Array<{ family: str
  * @param props - settings scope 和 api 注入的 props。
  * @returns 配置表单。
  */
-export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): ReactNode {
+export function DevinBridgeCard({ form, discover, embedded = true }: DevinBridgeCardProps): ReactNode {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
     () => form.getSnapshot(),
@@ -142,7 +144,7 @@ export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): React
 
   if (loading) {
     return (
-      <div className="devin-bridge-card">
+      <div className={embedded ? 'devin-bridge-card' : 'devin-bridge-page'}>
         <div className="devin-bridge-card-header">Devin Bridge</div>
         <p className="devin-bridge-hint">Loading…</p>
         {STYLES}
@@ -152,9 +154,58 @@ export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): React
 
   if (snapshot.status === 'unavailable') {
     return (
-      <div className="devin-bridge-card">
+      <div className={embedded ? 'devin-bridge-card' : 'devin-bridge-page'}>
         <div className="devin-bridge-card-header">Devin Bridge</div>
         <p className="devin-bridge-hint">Settings unavailable (running in memory mode).</p>
+        {STYLES}
+      </div>
+    )
+  }
+
+  const body = (
+    <div className="devin-bridge-card-body">
+      {!snapshot.writable && (
+        <p className="devin-bridge-readonly" role="status">Read-only settings provider.</p>
+      )}
+
+      {/* 连接状态（token 来源提示） */}
+      <ConnectionStatus token={value?.token} baseUrl={value?.baseUrl} />
+
+      {/* 模型管理（主要功能，默认展开） */}
+      <ModelManager
+        models={value?.models ?? []}
+        disabled={disabled}
+        discover={discover}
+        onSave={handleSaveModels}
+        onError={setError}
+      />
+
+      {/* 高级选项（默认折叠） */}
+      <details className="devin-bridge-advanced">
+        <summary className="devin-bridge-advanced-summary">Advanced settings</summary>
+        <div className="devin-bridge-advanced-body">
+          <FieldRow def={ADVANCED_FIELDS.token} value={value?.token} disabled={disabled} onSave={handleSaveField} />
+          <FieldRow def={ADVANCED_FIELDS.baseUrl} value={value?.baseUrl} disabled={disabled} onSave={handleSaveField} />
+          <FieldRow def={ADVANCED_FIELDS.proxy} value={value?.proxy} disabled={disabled} onSave={handleSaveField} />
+          <FieldRow def={ADVANCED_FIELDS.forceHttp1} value={value?.forceHttp1} disabled={disabled} onSave={handleSaveField} />
+          <FieldRow def={ADVANCED_FIELDS.defaultContextWindow} value={value?.defaultContextWindow} disabled={disabled} onSave={handleSaveField} />
+          <FieldRow def={ADVANCED_FIELDS.defaultMaxTokens} value={value?.defaultMaxTokens} disabled={disabled} onSave={handleSaveField} />
+        </div>
+      </details>
+
+      {error && <p className="devin-bridge-error" role="status">{error}</p>}
+      {saving && <p className="devin-bridge-hint">Saving…</p>}
+    </div>
+  )
+
+  if (!embedded) {
+    return (
+      <div className="devin-bridge-page">
+        <div className="devin-bridge-page-header">
+          <span className="devin-bridge-card-title">Devin Bridge</span>
+          <span className="devin-bridge-card-desc">Devin Connect LLM adapter (swe-2 / glm-5.3)</span>
+        </div>
+        {body}
         {STYLES}
       </div>
     )
@@ -173,40 +224,25 @@ export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): React
         <span className="devin-bridge-chevron">{open ? '▼' : '▶'}</span>
       </button>
 
-      {open && (
-        <div className="devin-bridge-card-body">
-          {!snapshot.writable && (
-            <p className="devin-bridge-readonly" role="status">Read-only settings provider.</p>
-          )}
-
-          {/* 模型管理（主要功能，默认展开） */}
-          <ModelManager
-            models={value?.models ?? []}
-            disabled={disabled}
-            discover={discover}
-            onSave={handleSaveModels}
-            onError={setError}
-          />
-
-          {/* 高级选项（默认折叠） */}
-          <details className="devin-bridge-advanced">
-            <summary className="devin-bridge-advanced-summary">Advanced settings</summary>
-            <div className="devin-bridge-advanced-body">
-              <FieldRow def={ADVANCED_FIELDS.token} value={value?.token} disabled={disabled} onSave={handleSaveField} />
-              <FieldRow def={ADVANCED_FIELDS.baseUrl} value={value?.baseUrl} disabled={disabled} onSave={handleSaveField} />
-              <FieldRow def={ADVANCED_FIELDS.proxy} value={value?.proxy} disabled={disabled} onSave={handleSaveField} />
-              <FieldRow def={ADVANCED_FIELDS.forceHttp1} value={value?.forceHttp1} disabled={disabled} onSave={handleSaveField} />
-              <FieldRow def={ADVANCED_FIELDS.defaultContextWindow} value={value?.defaultContextWindow} disabled={disabled} onSave={handleSaveField} />
-              <FieldRow def={ADVANCED_FIELDS.defaultMaxTokens} value={value?.defaultMaxTokens} disabled={disabled} onSave={handleSaveField} />
-            </div>
-          </details>
-
-          {error && <p className="devin-bridge-error" role="status">{error}</p>}
-          {saving && <p className="devin-bridge-hint">Saving…</p>}
-        </div>
-      )}
+      {open && body}
 
       {STYLES}
+    </div>
+  )
+}
+
+/** 连接状态行：显示当前 token 来源与目标端点。 */
+function ConnectionStatus({ token, baseUrl }: { token?: string; baseUrl?: string }): ReactNode {
+  const custom = Boolean(token?.trim())
+  return (
+    <div className="devin-bridge-status">
+      <span className={`devin-bridge-status-dot ${custom ? 'devin-bridge-status-dot-config' : 'devin-bridge-status-dot-auto'}`} />
+      <span className="devin-bridge-status-text">
+        {custom
+          ? 'Using token from settings'
+          : 'Token auto-detected from Devin CLI credentials.toml'}
+        {baseUrl?.trim() ? ` → ${baseUrl.trim()}` : ''}
+      </span>
     </div>
   )
 }
@@ -281,6 +317,7 @@ function ModelManager({
   const [fetching, setFetching] = useState(false)
   const [candidates, setCandidates] = useState<DiscoveredModel[] | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [filter, setFilter] = useState('')
   const [showAddManual, setShowAddManual] = useState(false)
   const [manualId, setManualId] = useState('')
   const [manualName, setManualName] = useState('')
@@ -319,6 +356,24 @@ function ModelManager({
     })
   }
 
+  const pickFamily = (ids: string[], on: boolean) => {
+    setPicked((current) => {
+      const next = new Set(current)
+      for (const id of ids) {
+        if (on) next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  }
+
+  const filterLower = filter.trim().toLowerCase()
+  const visibleCandidates = candidates === null ? null
+    : filterLower === '' ? candidates
+    : candidates.filter((m) =>
+        m.id.toLowerCase().includes(filterLower) || (m.name ?? '').toLowerCase().includes(filterLower),
+      )
+
   const adoptPicked = async () => {
     if (candidates === null) return
     const byId = new Map(models.map((m) => [m.id, m]))
@@ -327,7 +382,7 @@ function ModelManager({
       if (!byId.has(candidate.id)) {
         // discoverModels 返回的是 base id（已去掉 effort 后缀）
         // name 里带 [Free]/[Premium]/(Nx) 标记，解析出来
-        const rawLabel = candidate.name?.replace(/\s*\[(?:Free|Premium)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim() ?? candidate.id
+        const rawLabel = candidate.name?.replace(/\s*\[(?:Free|Premium|Promo)\]\s*/g, '').replace(/\s*\([\d.]+x\)\s*/g, '').trim() ?? candidate.id
         const isPromo = candidate.name?.includes('[Promo]') ?? false
         const isPremium = candidate.name?.includes('[Premium]') ?? false
         const multMatch = candidate.name?.match(/\(([\d.]+)x\)/)
@@ -432,43 +487,86 @@ function ModelManager({
       {/* Fetch 候选列表 — 按 family 分组 */}
       {candidates !== null && (
         <div className="devin-bridge-fetch-picker">
-          <p className="devin-bridge-field-hint">
-            {candidates.length} models available, {picked.size} selected. Grouped by family.
-          </p>
-          {groupCandidatesByFamily(candidates).map(({ family, models }) => (
-            <div key={family} className="devin-bridge-family-group">
-              <div className="devin-bridge-family-header">
-                <span className="devin-bridge-family-name">{family}</span>
-                <span className="devin-bridge-family-count">{models.length}</span>
-              </div>
-              <ul className="devin-bridge-candidate-list">
-                {models.map((model) => {
-                  const info = parseCandidateInfo(model)
-                  return (
-                    <li key={model.id} className="devin-bridge-candidate-item">
-                      <label className="devin-bridge-candidate-label">
-                        <input
-                          type="checkbox"
-                          className="devin-bridge-checkbox"
-                          checked={picked.has(model.id)}
-                          onChange={() => togglePick(model.id)}
-                        />
-                        <span className="devin-bridge-model-id">{model.id}</span>
-                        {info.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-promo">Promo</span>}
-                        {info.isPremium && !info.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
-                        {model.contextWindow && (
-                          <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k</span>
-                        )}
-                        {info.creditMultiplier && (
-                          <span className="devin-bridge-model-tag">{info.creditMultiplier}x</span>
-                        )}
-                      </label>
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
-          ))}
+          <div className="devin-bridge-picker-toolbar">
+            <input
+              className="devin-bridge-input devin-bridge-picker-search"
+              type="text"
+              placeholder="Filter models…"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+            <span className="devin-bridge-picker-count">
+              {picked.size}/{candidates.length} selected
+            </span>
+            <button
+              type="button"
+              className="devin-bridge-btn-text"
+              onClick={() => setPicked(new Set(candidates.map((m) => m.id)))}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className="devin-bridge-btn-text"
+              onClick={() => setPicked(new Set())}
+            >
+              None
+            </button>
+          </div>
+          <div className="devin-bridge-picker-scroll">
+            {groupCandidatesByFamily(visibleCandidates ?? []).map(({ family, models: famModels }) => {
+              const allOn = famModels.every((m) => picked.has(m.id))
+              return (
+                <div key={family} className="devin-bridge-family-group">
+                  <div className="devin-bridge-family-header">
+                    <label className="devin-bridge-candidate-label">
+                      <input
+                        type="checkbox"
+                        className="devin-bridge-checkbox"
+                        checked={allOn}
+                        onChange={(e) => pickFamily(famModels.map((m) => m.id), e.target.checked)}
+                      />
+                      <span className="devin-bridge-family-name">{family}</span>
+                    </label>
+                    <span className="devin-bridge-family-count">{famModels.length}</span>
+                  </div>
+                  <ul className="devin-bridge-candidate-list">
+                    {famModels.map((model) => {
+                      const info = parseCandidateInfo(model)
+                      const known = models.some((m) => m.id === model.id)
+                      return (
+                        <li key={model.id} className="devin-bridge-candidate-item">
+                          <label className="devin-bridge-candidate-label">
+                            <input
+                              type="checkbox"
+                              className="devin-bridge-checkbox"
+                              checked={picked.has(model.id)}
+                              onChange={() => togglePick(model.id)}
+                            />
+                            <span className="devin-bridge-model-id">{model.id}</span>
+                            <span className="devin-bridge-candidate-tags">
+                              {known && <span className="devin-bridge-model-tag">added</span>}
+                              {info.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-promo">Promo</span>}
+                              {info.isPremium && !info.isPromo && <span className="devin-bridge-model-tag devin-bridge-tag-premium">Premium</span>}
+                              {model.contextWindow && (
+                                <span className="devin-bridge-model-tag">{(model.contextWindow / 1000).toFixed(0)}k</span>
+                              )}
+                              {info.creditMultiplier && (
+                                <span className="devin-bridge-model-tag">{info.creditMultiplier}x</span>
+                              )}
+                            </span>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )
+            })}
+            {visibleCandidates !== null && visibleCandidates.length === 0 && (
+              <p className="devin-bridge-hint">No models match "{filter}".</p>
+            )}
+          </div>
           <div className="devin-bridge-model-actions">
             <button
               type="button"
@@ -481,7 +579,7 @@ function ModelManager({
             <button
               type="button"
               className="devin-bridge-btn devin-bridge-btn-secondary"
-              onClick={() => { setCandidates(null); setPicked(new Set()) }}
+              onClick={() => { setCandidates(null); setPicked(new Set()); setFilter('') }}
             >
               Close
             </button>
@@ -790,6 +888,20 @@ function formatValue(value: unknown, type: FieldDef['type']): string {
 /** 内联样式。 */
 const STYLES = (
   <style>{`
+    .devin-bridge-page {
+      flex-direction: column;
+      gap: 16px;
+      display: flex;
+      max-width: 720px;
+    }
+    .devin-bridge-page-header {
+      flex-direction: column;
+      gap: 4px;
+      display: flex;
+    }
+    .devin-bridge-page-header .devin-bridge-card-title {
+      font-size: 16px;
+    }
     .devin-bridge-card {
       border: 1px solid var(--dsw-alias-border-l2);
       border-radius: 12px;
@@ -907,6 +1019,75 @@ const STYLES = (
       font-size: 12px;
       margin: 0;
     }
+    .devin-bridge-status {
+      align-items: center;
+      border: 1px solid var(--dsw-alias-border-l2);
+      border-radius: 8px;
+      display: flex;
+      gap: 8px;
+      padding: 8px 10px;
+    }
+    .devin-bridge-status-dot {
+      border-radius: 50%;
+      flex-shrink: 0;
+      height: 8px;
+      width: 8px;
+    }
+    .devin-bridge-status-dot-auto {
+      background: var(--dsw-alias-state-success-primary, #22c55e);
+    }
+    .devin-bridge-status-dot-config {
+      background: var(--dsw-alias-state-business-primary, #3b82f6);
+    }
+    .devin-bridge-status-text {
+      color: var(--dsw-alias-label-secondary);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .devin-bridge-picker-toolbar {
+      align-items: center;
+      display: flex;
+      gap: 8px;
+    }
+    .devin-bridge-picker-search {
+      flex: 1;
+      font-size: 13px;
+      min-width: 0;
+      padding: 4px 10px;
+    }
+    .devin-bridge-picker-count {
+      color: var(--dsw-alias-label-tertiary);
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    .devin-bridge-btn-text {
+      background: none;
+      border: none;
+      color: var(--dsw-alias-state-business-primary, #3b82f6);
+      cursor: pointer;
+      flex-shrink: 0;
+      font: inherit;
+      font-size: 12px;
+      padding: 2px 4px;
+    }
+    .devin-bridge-btn-text:hover {
+      text-decoration: underline;
+    }
+    .devin-bridge-picker-scroll {
+      flex-direction: column;
+      gap: 8px;
+      display: flex;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .devin-bridge-candidate-tags {
+      align-items: center;
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
     .devin-bridge-model-actions {
       display: flex;
       gap: 8px;
@@ -987,11 +1168,8 @@ const STYLES = (
       border-radius: 10px;
       color: var(--dsw-alias-label-secondary);
       font-size: 11px;
+      margin-left: auto;
       padding: 0 6px;
-    }
-    .devin-bridge-fetch-picker {
-      max-height: 360px;
-      overflow-y: auto;
     }
     .devin-bridge-candidate-label {
       display: flex;
