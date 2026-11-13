@@ -41,6 +41,7 @@ import {
   ExaCodeiumCommonPb_ChatMessageSource,
   ExaCodeiumCommonPb_ChatToolCallSchema,
   ExaCodeiumCommonPb_CompletionConfigurationSchema,
+  ExaCodeiumCommonPb_ImageDataSchema,
   ExaCodeiumCommonPb_ConversationalPlannerMode,
   ExaCodeiumCommonPb_MetadataSchema,
   ExaCortexPb_CortexStepType,
@@ -52,7 +53,6 @@ import {
 import type {
   ExaChatPb_ChatMessagePrompt,
   ExaChatPb_ChatToolDefinition,
-  ExaCodeiumCommonPb_ImageData,
   GetChatMessageRequest,
 } from '../proto/gen/devin_pb.ts'
 import { createDevinTransport } from './transport.ts'
@@ -716,7 +716,9 @@ export class DevinAdapter extends LlmAdapter {
             const stored = await c.readImage(block.attachment, signal)
             const base64 = Buffer.from(stored.data).toString('base64')
             const mimeType = stored.ref.mediaType
-            prompt.images.push({ base64Data: base64, mimeType } as ExaCodeiumCommonPb_ImageData)
+            prompt.images.push(
+              create(ExaCodeiumCommonPb_ImageDataSchema, { base64Data: base64, mimeType }),
+            )
           } catch (err) {
             throw new LlmError(
               `Failed to read image attachment: ${err instanceof Error ? err.message : String(err)}`,
