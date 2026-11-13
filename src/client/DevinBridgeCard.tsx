@@ -42,6 +42,7 @@ interface DiscoveredModel {
   name?: string
   contextWindow?: number
   maxTokens?: number
+  inputModalities?: readonly string[]
 }
 
 export interface QuotaSource {
@@ -358,7 +359,16 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
 
   const value = snapshot.value
   const disabled = !snapshot.writable || saving
-  const connected = quota.error === null && quota.data !== null
+
+  // 顶栏状态：额度已返回 → 已连接；报错 → 额度查询失败（附原因）；
+  // 还在加载 → 连接中。token 来源一并标出。
+  const baseUrl = value?.baseUrl?.trim() || 'server.codeium.com'
+  const tokenSource = value?.token?.trim() ? 'settings token' : 'credentials.toml'
+  const status = quota.data !== null
+    ? { tone: 'ok' as const, text: `已连接 · ${baseUrl} · ${quota.data.plan ?? tokenSource}` }
+    : quota.error !== null
+      ? { tone: 'error' as const, text: `额度查询失败 · ${baseUrl} · ${tokenSource}` }
+      : { tone: 'loading' as const, text: `连接中… · ${baseUrl} · ${tokenSource}` }
 
   const save = useCallback(
     async (field: string, fieldValue: unknown) => {
@@ -400,7 +410,7 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
           ...prev?.description ? { description: prev.description } : {},
           contextWindow: c.contextWindow ?? prev?.contextWindow ?? 0,
           maxTokens: c.maxTokens ?? prev?.maxTokens ?? 128000,
-          supportsImages: prev?.supportsImages ?? false,
+          supportsImages: c.inputModalities?.includes('image') ?? prev?.supportsImages ?? false,
           ...name.includes('[Promo]') || prev?.isPromo ? { isPromo: true } : {},
           ...name.includes('[Premium]') || prev?.isPremium ? { isPremium: true } : {},
           ...multMatch ? { creditMultiplier: Number(multMatch[1]) } : prev?.creditMultiplier !== undefined ? { creditMultiplier: prev.creditMultiplier } : {},
@@ -439,15 +449,16 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
         <div className="dbp-topbar-left">
           <span
             className="dbp-dot"
-            style={{ background: connected ? 'var(--dsw-alias-state-success-primary, #30a46c)' : 'var(--dsw-alias-state-error-primary, #e5484d)' }}
+            style={{
+              background:
+                status.tone === 'ok'
+                  ? 'var(--dsw-alias-state-success-primary, #30a46c)'
+                  : status.tone === 'error'
+                    ? 'var(--dsw-alias-state-error-primary, #e5484d)'
+                    : 'var(--dsw-alias-fill-tertiary, rgba(128,128,128,0.4))',
+            }}
           />
-          <span className="dbp-topbar-text">
-            {connected
-              ? `已连接 · ${value?.baseUrl || 'server.codeium.com'}${quota.data?.plan ? ` · ${quota.data.plan}` : ''}`
-              : value?.token?.trim()
-                ? '已配置 token · 连接失败'
-                : '未连接 · 使用 credentials.toml 或填入 token'}
-          </span>
+          <span className="dbp-topbar-text">{status.text}</span>
         </div>
         <button type="button" className="dbp-btn" onClick={refreshQuota}>刷新</button>
       </div>
