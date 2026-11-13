@@ -4,6 +4,8 @@
 
 A [dsh](https://github.com/deepseek-ai/deepseek-harness) LLM adapter plugin that bridges [Devin](https://devin.ai)'s Connect RPC API into the dsh model provider system, enabling dsh's internal agent loop to use Devin-hosted models (`glm-5.2`, `swe-1.7`, and any other model Devin exposes) as backends.
 
+> **dsh 0.2+**: this release targets the dsh 0.2 plugin architecture (volatile config, `configForms`, Typert remotes, `settings.plugins.tab`). It requires `dsh >= 0.2.0-rc.1`; for dsh 0.1 hosts use the `0.1.x` line.
+
 ## How it works
 
 The plugin registers a `devin` provider route on `ctx.llm` via the dsh LLM seam (`LlmAdapter`). When dsh's agent loop routes a request to `provider: devin`, the adapter:
@@ -65,7 +67,9 @@ All fields are optional — the plugin works out of the box once a token is avai
         jitterRatio: 0.1
 ```
 
-When the dsh settings service is available, all of the above can be adjusted at runtime through the settings panel — changes take effect immediately (`live` applies). The `token` field is marked `role('secret')` so it is automatically redacted in settings descriptors returned to wire surfaces.
+When the dsh settings service is available, all of the above can be adjusted at runtime through the **Devin** tab on the Plugins settings page — every field is `volatile`, so writes land on the running plugin without a remount. The `token` field is marked `role('secret')` so it is automatically redacted in settings descriptors returned to wire surfaces.
+
+The plugin's settings namespace equals its composition entry id (`devin-bridge` in `cordis.patch.yml`); if you compose the plugin under a different entry id, that id becomes the namespace.
 
 ## Usage
 
@@ -73,22 +77,25 @@ Once configured, dsh's model selector will show `Devin` as a provider with avail
 
 ## Features
 
-- **Dynamic model catalog**: Fetches the live model list from Devin via `GetCascadeModelConfigs` RPC (5-minute TTL cache), merging user-configured models as fallback. Network failures gracefully fall back to the static config.
-- **Text streaming**: Full text delta streaming with block assembly
-- **Reasoning/thinking**: Reasoning content mapped to dsh's `reasoning` block type
-- **Tool calls**: Devin tool-call deltas translated to dsh's `tool-call` blocks
-- **Image support**: Vision-capable models accept image inputs via dsh's attachment system
-- **Token usage**: Input/output token accounting reported to dsh
+- **Dynamic model catalog**: Fetches the live model list from Devin via `GetCascadeModelConfigs` RPC, reading `model_family_metadata` to group reasoning-effort tiers (`high`/`medium`/`max`/`none`) under one base model and to detect fast-mode variants, promo flags, premium flags, credit multipliers, and image support.
+- **Reasoning effort slider**: The adapter exposes dsh's `reasoning.efforts` on each model and resolves the selected effort to a concrete Devin `model_uid` via the catalog tier table (with a suffix-mapping fallback when catalog metadata is unavailable).
+- **Text streaming**: Full text delta streaming with indexed block assembly
+- **Reasoning/thinking**: Reasoning content mapped to dsh's `reasoning` block type; thinking signatures are round-tripped through `finish.replayState` so assistant history replays with valid signatures.
+- **Tool calls**: Devin tool-call deltas translated to dsh's `tool-call` blocks; tool schemas are stripped of natural-language annotations and the true descriptions are injected into the system prompt (upstream treats the wire `description` field as a routing hint).
+- **Image support**: Vision-capable models accept image inputs via dsh's attachment system. Following the upstream contract, images are attached only to the current turn (after the last assistant message); historical images degrade to text placeholders.
+- **Token usage**: Input/output/cache token accounting reported to dsh
+- **Retry policy**: Provider-owned `retryPolicy` config resolved through dsh's `resolveRetryPolicy` (normal/always modes)
 - **System prompt sanitization**: Identity-agnostic system prompt rewriting for cross-model compatibility
 - **Proxy support**: Optional outbound HTTP/HTTPS/SOCKS5 proxy
-- **Settings panel integration**: Runtime-adjustable configuration via dsh settings service
+- **Volatile settings**: Runtime-adjustable configuration via the Plugins settings page; writes apply live
 - **Credential auto-detection**: Reads `devin auth login` credentials when no explicit token is configured
 
 ## Architecture
 
 ```
 src/
-├── index.ts              # Cordis plugin entry: Config schema, settings panel, ctx.llm registration
+├── index.ts              # Cordis plugin entry: volatile Config schema, provider/adapter/discovery registration
+├── client/               # Browser half: settings.plugins.tab "Devin" card (configForms + remote.llm)
 ├── adapter/
 │   ├── devin.ts          # DevinAdapter: GenerateOptions → Devin RPC → StreamChunk
 │   ├── decoder.ts        # GetChatMessageResponse → StreamChunk translation

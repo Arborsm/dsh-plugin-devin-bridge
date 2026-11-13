@@ -1,5 +1,13 @@
 // Devin Connect 适配器：dsh GenerateOptions → Devin RPC → StreamChunk。
-// 实现 dsh-llm 的 LlmAdapter 接口，注册为 `devin` provider route。
+// 实现 dsh-llm 0.2 的 LlmAdapter 接口，注册为 `devin` provider route。
+//
+// 协议细节对照 Green-hats/devin-2api-lite：
+//   - GetChatMessage metadata.os = 'mac'，GetCascadeModelConfigs = 'win'
+//   - tool definition 的 description 回填工具名（上游把它当分类提示），
+//     真正的工具说明经 system prompt 的 <tool> 段注入
+//   - 图片只挂「当前轮」（最后一条 assistant 之后的 user/tool 消息），
+//     历史图降级为文本占位，否则上游 invalid_argument
+//   - assistant 历史带 thinking + signature（从 replayState 恢复）
 
 import { createClient } from '@connectrpc/connect'
 import { create } from '@bufbuild/protobuf'
@@ -7,16 +15,22 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import {
   LlmAdapter,
   LlmError,
+  ReasoningEffortId,
+  offloadedImageText,
+  resolveRetryPolicy,
+  type ContentBlock,
   type GenerateOptions,
   type LlmDiscoveredModel,
   type LlmModelInfo,
   type LlmProviderInfo,
   type LlmResolvedModelInfo,
-  type Message,
+  type PreparedAdapterCall,
+  type ReplayEnvelope,
+  type RequestMessage,
+  type ResolvedRetryPolicy,
+  type RetryPolicyConfig,
   type StreamChunk,
   type ToolSchema,
-  type ContentBlock,
-  ReasoningEffortId,
 } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import {
@@ -58,6 +72,12 @@ export interface DevinCatalogModel {
   supportsImages?: boolean
   /** 模型系列标签（如 "GLM-5.2", "SWE-1.7"），从 model_family_metadata 提取。 */
   family?: string
+  /** family metadata 中的推理档位名（小写，如 "high"/"max"/"none"）。 */
+  effort?: string
+  /** family metadata "fast mode" 标记；lightning 变体不参与档位解析。 */
+  fastMode?: boolean
+  /** 是否该 family 的默认档位（is_default_model_in_family）。 */
+  isDefaultInFamily?: boolean
   /** 是否需要付费 plan。 */
   isPremium?: boolean
   /** 是否当前处于促销期（promo_status.is_active）。 */
@@ -68,18 +88,20 @@ export interface DevinCatalogModel {
 
 export interface DevinConnectionOptions {
   baseUrl: string
+  /** 会话 token；空串表示未配置（元数据路径照常工作，发起请求时抛 AUTH）。 */
   token: string
   proxy?: string
   forceHttp1: boolean
   models: readonly DevinCatalogModel[]
   defaultContextWindow: number
   defaultMaxTokens: number
+  retryPolicy?: RetryPolicyConfig
   /** 可选的 attachment 读取器，用于获取图片字节 */
   readImage?: (ref: ImageAttachmentRef, signal?: AbortSignal) => Promise<StoredImageAttachment>
 }
 
 export interface DevinAdapterOptions {
-  /** 当前连接配置；每次操作时调用以获取最新值。 */
+  /** 当前连接配置；每次操作时调用以获取最新快照。 */
   options: () => DevinConnectionOptions
 }
 
@@ -87,22 +109,24 @@ export interface DevinAdapterOptions {
 
 const PROVIDER = 'devin'
 
-// ─── Reasoning effort → model_uid 后缀映射 ──────────────────────────────────
+// ─── Reasoning effort → model_uid 映射 ──────────────────────────────────────
 //
 // Devin 的 model_uid 已包含 effort（glm-5-2=High, glm-5-2-max=Max,
 // glm-5-2-none=No Thinking, swe-1-7=Max, swe-1-7-medium=Medium）。
 // 插件对外只暴露基础 model id（glm-5-2, swe-1-7），通过 dsh 的 reasoning
-// effort 滑块（high/medium/max/none）在内部映射到实际 model_uid。
+// effort 滑块在内部映射到实际 model_uid：
+//   1) 优先按目录的 family metadata 档位表（effort 名 → uid）解析
+//   2) 目录缺失时回退到内置后缀映射
 
-/** dsh effort id → Devin model_uid 后缀。 */
-const EFFORT_SUFFIX: Record<string, string> = {
-  high: '',           // glm-5-2 → glm-5-2 (High)
-  medium: '-medium',  // swe-1-7 → swe-1-7-medium
-  max: '-max',        // glm-5-2 → glm-5-2-max
-  none: '-none',      // glm-5-2 → glm-5-2-none
+/** dsh effort id → Devin model_uid 候选后缀（目录不可用时的回退，按序尝试）。 */
+const EFFORT_SUFFIX: Record<string, readonly string[]> = {
+  high: ['', '-high'],       // glm-5-2=High / swe-2-high
+  medium: ['-medium'],
+  max: ['-max'],
+  none: ['-none'],
 }
 
-/** dsh reasoning effort 列表（供 resolveModel 返回给 dsh 显示滑块）。 */
+/** dsh reasoning effort 列表（目录不可用时展示的全部滑块档位）。 */
 const REASONING_EFFORTS = [
   { id: ReasoningEffortId('high'), name: 'High' },
   { id: ReasoningEffortId('medium'), name: 'Medium' },
@@ -110,21 +134,57 @@ const REASONING_EFFORTS = [
   { id: ReasoningEffortId('none'), name: 'No Thinking' },
 ] as const
 
+/** 规范化 catalog effort 名到 dsh effort id（"No Thinking" → "none"）。 */
+function normalizeEffortName(name: string): string {
+  const lower = name.trim().toLowerCase()
+  return lower === 'no thinking' ? 'none' : lower
+}
+
+/** 从目录构建 family → effort id → model_uid 的档位表（跳过 fast mode 变体）。 */
+function familyTiers(models: readonly DevinCatalogModel[]): Map<string, Map<string, string>> {
+  const tiers = new Map<string, Map<string, string>>()
+  for (const m of models) {
+    if (!m.family || !m.effort || m.fastMode) continue
+    const effort = normalizeEffortName(m.effort)
+    let tier = tiers.get(m.family)
+    if (!tier) {
+      tier = new Map()
+      tiers.set(m.family, tier)
+    }
+    if (!tier.has(effort)) tier.set(effort, m.id)
+  }
+  return tiers
+}
+
 /**
  * 把 base model id + reasoningEffort 映射到 Devin 实际 model_uid。
  * 如 glm-5-2 + max → glm-5-2-max，swe-1-7 + medium → swe-1-7-medium。
- * 如果映射后的 uid 不在已知模型列表里，回退到 base id。
+ * 优先走目录档位表；失败回退内置后缀映射；都不命中用 base id。
  */
-function resolveModelUid(baseId: string, effort: string | undefined, knownIds: Set<string>): string {
-  if (!effort) return baseId
-  const suffix = EFFORT_SUFFIX[effort]
-  if (suffix === undefined) return baseId
-  const mapped = suffix ? `${baseId}${suffix}` : baseId
-  // 只有已知模型才用映射后的 uid，否则回退
-  return knownIds.has(mapped) ? mapped : baseId
+function resolveModelUid(baseId: string, effort: string | undefined, models: readonly DevinCatalogModel[]): string {
+  const base = models.find((m) => m.id === baseId || toBaseModelId(m.id) === baseId)
+  if (effort) {
+    if (base?.family) {
+      const tierUid = familyTiers(models).get(base.family)?.get(normalizeEffortName(effort))
+      if (tierUid) return tierUid
+    }
+    for (const suffix of EFFORT_SUFFIX[normalizeEffortName(effort)] ?? []) {
+      const mapped = suffix ? `${baseId}${suffix}` : baseId
+      if (models.some((m) => m.id === mapped)) return mapped
+    }
+  }
+  // uid 存在就直接用（如 swe-2-high 本身就是真实 uid）
+  if (models.some((m) => m.id === baseId)) return baseId
+  // base id 非真实 uid（如 swe-2 只有 swe-2-high/medium/max 档位）：
+  // 用 family 的默认档位
+  if (base?.family) {
+    const def = models.find((m) => m.family === base.family && m.isDefaultInFamily && !m.fastMode)
+    if (def) return def.id
+  }
+  return baseId
 }
 
-/** 从 label 解析 effort 标签（如 "GLM-5.2 High" → "High"）。 */
+/** 从 label 解析 effort 标签（如 "GLM-5.2 High" → "High"），目录缺 family metadata 时回退。 */
 function parseEffortFromLabel(label: string): string | undefined {
   const match = label.match(/\b(Max|High|Medium|Low|No Thinking|Lightning)\b/i)
   return match?.[0]
@@ -133,7 +193,6 @@ function parseEffortFromLabel(label: string): string | undefined {
 /**
  * 把 model_uid 去掉 effort 后缀，得到 base model id。
  * 如 glm-5-2-max → glm-5-2, swe-1-7-medium → swe-1-7, glm-5-2-none-1m → glm-5-2。
- * 去掉 -max, -medium, -none, -1m, -lightning 等后缀。
  */
 function toBaseModelId(uid: string): string {
   return uid
@@ -166,14 +225,25 @@ export class DevinAdapter extends LlmAdapter {
     this.config = options
   }
 
-  /** 当前连接配置（每次调用读取最新值）。 */
+  /** 当前连接配置（每次调用读取最新快照）。 */
   private conn(): DevinConnectionOptions {
     return this.config.options()
   }
 
   /** 获取或重建 Connect client（baseUrl/token/proxy 变更时自动重建）。 */
-  private client(): ReturnType<typeof createClient<typeof ApiServerService>> {
-    const c = this.conn()
+  private client(c: DevinConnectionOptions): ReturnType<typeof createClient<typeof ApiServerService>> {
+    if (!c.token) {
+      const hint = process.platform === 'win32'
+        ? '%APPDATA%\\devin\\credentials.toml'
+        : '~/.local/share/devin/credentials.toml'
+      throw new LlmError(
+        `devin-bridge: no Devin session token found. Either:\n` +
+        `  1. Set token in the settings panel to a "devin-session-token$..." value, or\n` +
+        `  2. Run "devin auth login" to create ${hint}, or\n` +
+        `  3. Set DEVIN_CREDENTIALS_PATH to a custom credentials.toml path`,
+        'AUTH',
+      )
+    }
     const key = `${c.baseUrl}\0${c.token}\0${c.proxy ?? ''}\0${c.forceHttp1}`
     if (this.cachedClient !== null && this.cachedClientKey === key) {
       return this.cachedClient
@@ -189,64 +259,92 @@ export class DevinAdapter extends LlmAdapter {
     return this.cachedClient
   }
 
-  override providerInfo(_provider: string): LlmProviderInfo {
-    return { id: PROVIDER, name: 'Devin' }
+  override providerInfo(provider: string): LlmProviderInfo {
+    return { id: provider, name: 'Devin' }
   }
 
-  override async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    const c = this.conn()
-    return c.models.map((m) => ({
-      provider: PROVIDER,
+  override providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined {
+    return resolveRetryPolicy(this.conn().retryPolicy, `llm: provider "${provider}" retryPolicy`)
+  }
+
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    return this.conn().models.map((m) => ({
+      provider,
       id: m.id,
       name: m.name ?? m.id,
       ...m.description ? { description: m.description } : {},
-      ...m.supportsImages
-        ? { inputModalities: ['text' as const, 'image' as const] }
-        : { inputModalities: ['text' as const] },
+      inputModalities: m.supportsImages ? ['text' as const, 'image' as const] : ['text' as const],
     }))
   }
 
   override async resolveModel(
-    _provider: string,
+    provider: string,
     model: string,
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    const c = this.conn()
+    return this.modelInfo(this.conn(), provider, model)
+  }
+
+  /** 一次 adapter 生成（连接配置快照）下的 model metadata。 */
+  private modelInfo(c: DevinConnectionOptions, provider: string, model: string): LlmResolvedModelInfo {
     const configured = c.models.find((m) => m.id === model)
     const contextWindow = configured?.contextWindow ?? c.defaultContextWindow
+    // 目录里该 family 实际存在的档位优先；缺目录信息时给全部四个档位
+    const tiers = configured?.family ? familyTiers(c.models).get(configured.family) : undefined
+    const efforts = tiers && tiers.size > 0
+      ? REASONING_EFFORTS.filter((e) => tiers.has(e.id as unknown as string))
+      : REASONING_EFFORTS
     return {
-      provider: PROVIDER,
+      provider,
       id: model,
       name: configured?.name ?? model,
       ...configured?.description ? { description: configured.description } : {},
-      ...configured?.supportsImages
-        ? { inputModalities: ['text' as const, 'image' as const] }
-        : { inputModalities: ['text' as const] },
+      inputModalities: configured?.supportsImages ? ['text' as const, 'image' as const] : ['text' as const],
       context: { contextWindow },
       defaultMaxTokens: configured?.maxTokens ?? c.defaultMaxTokens,
-      // 暴露 high/medium/max/none effort 滑块给 dsh；
-      // 插件内部在 stream 时映射到实际 model_uid
+      // 暴露 effort 滑块给 dsh；插件内部在 stream 时映射到实际 model_uid
       reasoning: {
-        efforts: REASONING_EFFORTS,
+        efforts,
         defaultEffort: ReasoningEffortId('high'),
       },
     }
   }
 
-  // ─── 模型发现（供 settings 面板 "Fetch available models" 使用）────────────
+  /**
+   * 绑定 model metadata 与 dispatch 到同一配置快照：
+   * settings 在 prepare 与 stream 之间变更不会把两代配置混进一次调用。
+   */
+  override async prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall> {
+    const c = this.conn()
+    return {
+      model: this.modelInfo(c, provider, model),
+      stream: (options) => this.streamWithConn(options, c),
+    }
+  }
+
+  // ─── 模型发现（供设置页 "Fetch available models" 使用）─────────────────────
 
   /**
-   * 从 Devin 服务器拉取可用模型列表，供 settings 面板的
+   * 从 Devin 服务器拉取可用模型列表，供设置页的
    * "Fetch available models" 按钮调用。
    *
    * 同 family 的多个 effort 变体合并为一个基础模型（取 family default），
    * effort 走 dsh 的 reasoning effort 滑块控制，插件内部映射到实际 model_uid。
-   * 如 GLM-5.2 family → 只返回 glm-5-2，用户调 effort=high/medium/max/none
-   * 时插件映射到 glm-5-2 / glm-5-2-medium(无) / glm-5-2-max / glm-5-2-none。
    */
-  async discoverModels(signal?: AbortSignal): Promise<LlmDiscoveredModel[]> {
-    const dynamic = await this.fetchModelCatalog(signal)
-    // 按 family 分组，每个 family 只留 isDefault 的那个（或第一个）
+  /**
+   * @param draft - 可选的一次性端点/凭证（设置页草稿 interrogation），
+   *   给出时覆盖持久配置；harness 不会存储这些值。
+   */
+  async discoverModels(
+    draft?: { baseURL?: string; apiKey?: string },
+    signal?: AbortSignal,
+  ): Promise<LlmDiscoveredModel[]> {
+    const c = this.conn()
+    const conn: DevinConnectionOptions = draft && (draft.baseURL || draft.apiKey)
+      ? { ...c, baseUrl: draft.baseURL ?? c.baseUrl, token: draft.apiKey ?? c.token }
+      : c
+    const dynamic = await this.fetchModelCatalog(conn, signal)
+    // 按 family 分组，每个 family 只留默认档位的那个
     const byFamily = new Map<string, DevinCatalogModel>()
     for (const m of dynamic) {
       const fam = m.family ?? m.id
@@ -255,8 +353,8 @@ export class DevinAdapter extends LlmAdapter {
         byFamily.set(fam, m)
         continue
       }
-      // 优先选 isPromo 的（促销期）
-      if (m.isPromo && !existing.isPromo) {
+      // 优先选 family 默认档位；其次选 promo 的
+      if ((m.isDefaultInFamily && !existing.isDefaultInFamily) || (m.isPromo && !existing.isPromo && !existing.isDefaultInFamily)) {
         byFamily.set(fam, m)
       }
     }
@@ -266,6 +364,7 @@ export class DevinAdapter extends LlmAdapter {
       name: formatDiscoveredName(m),
       ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
       ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
+      inputModalities: m.supportsImages ? ['text' as const, 'image' as const] : ['text' as const],
     }))
   }
 
@@ -274,13 +373,10 @@ export class DevinAdapter extends LlmAdapter {
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
-   * description / family / effort / isPremium / isPromo / creditMultiplier。
-   *
-   * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
-   * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。
+   * description / family / effort / fastMode / defaultInFamily / isPremium /
+   * isPromo / creditMultiplier。
    */
-  private async fetchModelCatalog(signal?: AbortSignal): Promise<DevinCatalogModel[]> {
-    const c = this.conn()
+  private async fetchModelCatalog(c: DevinConnectionOptions, signal?: AbortSignal): Promise<DevinCatalogModel[]> {
     const metadata = create(ExaCodeiumCommonPb_MetadataSchema, {
       apiKey: c.token,
       extensionName: CLIENT_NAME,
@@ -291,17 +387,30 @@ export class DevinAdapter extends LlmAdapter {
       os: 'win',
     })
     const request = create(GetCascadeModelConfigsRequestSchema, { metadata })
-    const response = await this.client().getCascadeModelConfigs(request, { signal })
+    const response = await this.client(c).getCascadeModelConfigs(request, { signal })
 
     const models: DevinCatalogModel[] = []
     const seen = new Set<string>()
     for (const config of response.clientModelConfigs) {
       if (config.disabled) continue
-      const uid = config.modelUid
+      const uid = config.modelUid || config.modelOrAlias?.modelUid || ''
       if (!uid || seen.has(uid)) continue
       seen.add(uid)
-      const family = config.modelFamilyMetadata?.modelFamilyLabel || undefined
-      const effort = parseEffortFromLabel(config.label)
+      const familyMeta = config.modelFamilyMetadata
+      const family = familyMeta?.modelFamilyLabel || undefined
+      // effort / fastMode 从 family metadata entries 读，label 解析作回退
+      let effort: string | undefined
+      let fastMode = false
+      for (const entry of familyMeta?.entries ?? []) {
+        const key = entry.key.toLowerCase()
+        if (key === 'reasoning effort' || key === 'effort' || key === 'thinking') {
+          effort = entry.value?.name?.toLowerCase()
+        } else if (key === 'fast mode') {
+          fastMode = (entry.value?.order ?? 0n) > 0n
+        }
+      }
+      effort ??= parseEffortFromLabel(config.label)?.toLowerCase()
+      const isDefaultInFamily = config.isDefaultModelInFamily || familyMeta?.isDefaultModelInFamily === true
       const isPromo = config.promoStatus?.isActive === true
       models.push({
         id: uid,
@@ -311,6 +420,8 @@ export class DevinAdapter extends LlmAdapter {
         supportsImages: config.supportsImages,
         ...family ? { family } : {},
         ...effort ? { effort } : {},
+        ...fastMode ? { fastMode: true } : {},
+        ...isDefaultInFamily ? { isDefaultInFamily: true } : {},
         isPremium: config.isPremium,
         ...isPromo ? { isPromo: true } : {},
         ...config.creditMultiplier > 0 ? { creditMultiplier: config.creditMultiplier } : {},
@@ -319,12 +430,22 @@ export class DevinAdapter extends LlmAdapter {
     return models
   }
 
+  // ─── 流式调用 ─────────────────────────────────────────────────────────────
+
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    yield* this.streamWithConn(options, this.conn())
+  }
+
+  private async *streamWithConn(
+    options: GenerateOptions,
+    c: DevinConnectionOptions,
+  ): AsyncIterable<StreamChunk> {
     // 构建 Devin 请求
     let protoRequest: GetChatMessageRequest
     try {
-      protoRequest = await this.buildRequest(options)
+      protoRequest = await this.buildRequest(options, c)
     } catch (err) {
+      if (err instanceof LlmError) throw err
       throw new LlmError(
         `Devin request build failed: ${err instanceof Error ? err.message : String(err)}`,
         'INVALID_REQUEST',
@@ -335,7 +456,7 @@ export class DevinAdapter extends LlmAdapter {
     // 调用 Devin RPC
     let serverStream: AsyncIterable<import('../proto/gen/devin_pb.ts').GetChatMessageResponse>
     try {
-      serverStream = await this.client().getChatMessage(protoRequest)
+      serverStream = await this.client(c).getChatMessage(protoRequest, { signal: options.signal })
     } catch (err) {
       throw wrapConnectError(err)
     }
@@ -370,8 +491,7 @@ export class DevinAdapter extends LlmAdapter {
 
   // ─── buildRequest ─────────────────────────────────────────────────────────
 
-  private async buildRequest(options: GenerateOptions): Promise<GetChatMessageRequest> {
-    const c = this.conn()
+  private async buildRequest(options: GenerateOptions, c: DevinConnectionOptions): Promise<GetChatMessageRequest> {
     const fingerprint = randomHex(366)
     const trajectoryID = randomUUID()
     const cascadeID = randomUUID()
@@ -384,18 +504,28 @@ export class DevinAdapter extends LlmAdapter {
       ideName: CLIENT_NAME,
       ideVersion: CLIENT_VERSION,
       locale: 'en',
-      os: 'win',
+      os: 'mac',
       f: fingerprint,
     })
 
     // 把 base model id + reasoningEffort 映射到 Devin 实际 model_uid
-    const knownIds = new Set(c.models.map((m) => m.id))
-    const effortId = options.reasoningEffort as unknown as string | undefined
-    const actualModelUid = resolveModelUid(options.model, effortId, knownIds)
+    const actualModelUid = resolveModelUid(options.model, options.reasoningEffort as unknown as string | undefined, c.models)
+
+    // 拆出 system prompt：options.system + 开头的 system 消息
+    const parts: string[] = []
+    if (options.system) parts.push(options.system)
+    let startIndex = 0
+    while (startIndex < options.messages.length && options.messages[startIndex]!.role === 'system') {
+      const text = flattenText(options.messages[startIndex]!.content)
+      if (text) parts.push(text)
+      startIndex++
+    }
+    const systemPrompt = parts.join('\n\n')
+    const messages = options.messages.slice(startIndex)
 
     const result = create(GetChatMessageRequestSchema, {
       metadata,
-      prompt: sanitizeSystemPrompt(withToolDescriptions(options.system ?? '', options.tools)),
+      prompt: sanitizeSystemPrompt(withToolDescriptions(systemPrompt, options.tools)),
       chatModelUid: actualModelUid,
       requestType: ChatMessageRequestType.CASCADE,
       configuration: create(ExaCodeiumCommonPb_CompletionConfigurationSchema, {
@@ -416,18 +546,19 @@ export class DevinAdapter extends LlmAdapter {
       executionId: executionID,
     })
 
-    // 当前轮 = 最后一条 assistant 之后的所有 user/tool 消息
+    // 当前轮 = 最后一条 assistant 之后的所有 user/tool 消息（Devin 只可靠接受当前轮图片）
     let lastAssistantIndex = -1
-    for (let i = 0; i < options.messages.length; i++) {
-      if (options.messages[i]!.role === 'assistant') {
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i]!.role === 'assistant') {
         lastAssistantIndex = i
       }
     }
 
-    for (let i = 0; i < options.messages.length; i++) {
+    for (let i = 0; i < messages.length; i++) {
       const converted = await this.convertMessage(
-        options.messages[i]!,
+        messages[i]!,
         i > lastAssistantIndex,
+        c,
         options.signal,
       )
       result.chatMessagePrompts.push(...converted)
@@ -445,66 +576,94 @@ export class DevinAdapter extends LlmAdapter {
   // ─── 消息转换 ─────────────────────────────────────────────────────────────
 
   private async convertMessage(
-    message: Message,
+    message: RequestMessage,
     attachImages: boolean,
+    c: DevinConnectionOptions,
     signal?: AbortSignal,
   ): Promise<ExaChatPb_ChatMessagePrompt[]> {
-    // dsh Message.role 只有 'system' | 'user' | 'assistant'
-    // 用 source.kind 区分 user / model / tool / plugin
-    const source = message.source
-
-    if (source.kind === 'tool') {
-      // tool result
-      const prompt = await this.promptForContent(
-        ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_TOOL,
-        message.content,
-        attachImages,
-        signal,
-      )
-      prompt.toolCallId = source.callId
-      // 检查是否有 isError 标记
-      for (const block of message.content) {
-        if (block.type === 'tool-result' && block.isError) {
-          prompt.toolResultIsError = true
-        }
+    switch (message.role) {
+      case 'system': {
+        // 历史中间的 system 消息：Devin 没有 system 历史角色，
+        // 包成 <system-reminder> 的 user 提示（与官方 pi-ai adapter 一致）。
+        const content = flattenText(message.content)
+        const prompt = await this.promptForContent(
+          ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER,
+          [],
+          attachImages,
+          c,
+          signal,
+        )
+        prompt.prompt = `<system-reminder>\n${content.replaceAll('</system-reminder>', '<\\/system-reminder>')}\n</system-reminder>`
+        return [prompt]
       }
-      return [prompt]
-    }
-
-    if (source.kind === 'model') {
-      // assistant message
-      const prompt = await this.promptForContent(
-        ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_SYSTEM,
-        message.content,
-        false,
-        signal,
-      )
-      for (const block of message.content) {
-        if (block.type === 'tool-call') {
-          prompt.toolCalls.push(create(ExaCodeiumCommonPb_ChatToolCallSchema, {
-            id: block.id,
-            name: block.name,
-            argumentsJson: block.arguments,
-          }))
-        }
+      case 'developer':
+        // projectToolUpdates 已在 runtime 层剥离 developer 消息；
+        // 防御性兜底：只把文本块以 user 提示形式下发。
+        return [await this.promptForContent(
+          ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER,
+          message.content.filter((b) => b.type === 'text'),
+          attachImages,
+          c,
+          signal,
+        )]
+      case 'tool': {
+        const prompt = await this.promptForContent(
+          ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_TOOL,
+          message.content,
+          attachImages,
+          c,
+          signal,
+        )
+        prompt.toolCallId = message.toolCallId as string
+        prompt.toolResultIsError = message.isError === true
+        return [prompt]
       }
-      return [prompt]
+      case 'assistant': {
+        const prompt = await this.promptForContent(
+          ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_SYSTEM,
+          message.content,
+          false,
+          c,
+          signal,
+        )
+        // replayState 里恢复 thinking signature（Devin prompt 只有一个 signature 槽，取最后一个非空）
+        const replay = message.source.replayState as ReplayEnvelope | undefined
+        for (const block of message.content) {
+          if (block.type === 'tool-call') {
+            prompt.toolCalls.push(create(ExaCodeiumCommonPb_ChatToolCallSchema, {
+              id: block.id as string,
+              name: block.name,
+              argumentsJson: block.arguments,
+            }))
+          }
+        }
+        if (replay?.blocks) {
+          for (let i = 0; i < message.content.length; i++) {
+            if (message.content[i]!.type !== 'reasoning') continue
+            const meta = replay.blocks[i] as { signature?: string; redacted?: boolean } | undefined
+            if (meta?.signature) prompt.signature = meta.signature
+            if (meta?.redacted) prompt.thinkingRedacted = true
+          }
+        }
+        return [prompt]
+      }
+      default:
+        // user（含 RequestUserInput）→ user source
+        return [await this.promptForContent(
+          ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER,
+          message.content,
+          attachImages,
+          c,
+          signal,
+        )]
     }
-
-    // user or plugin → user source
-    const prompt = await this.promptForContent(
-      ExaCodeiumCommonPb_ChatMessageSource.ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER,
-      message.content,
-      attachImages,
-      signal,
-    )
-    return [prompt]
   }
 
   private async promptForContent(
     source: ExaCodeiumCommonPb_ChatMessageSource,
     content: readonly ContentBlock[],
     attachImages: boolean,
+    c: DevinConnectionOptions,
     signal?: AbortSignal,
   ): Promise<ExaChatPb_ChatMessagePrompt> {
     const prompt = create(ExaChatPb_ChatMessagePromptSchema, {
@@ -519,24 +678,29 @@ export class DevinAdapter extends LlmAdapter {
           text += block.text
           break
         case 'reasoning':
-          prompt.thinking = block.text
-          prompt.thinkingRedacted = false
+          // 多个 reasoning 块拼接到同一个 thinking 槽
+          prompt.thinking += block.text
           break
         case 'image':
+          if (block.offloaded) {
+            // offload 过的历史图：发送占位文本而不是字节
+            if (text.length > 0) text += '\n'
+            text += offloadedImageText(block.attachment)
+            break
+          }
           if (!attachImages) {
             if (text.length > 0) text += '\n'
             text += '[Image omitted from history]'
             break
           }
-          const readImage = this.conn().readImage
-          if (!readImage) {
+          if (!c.readImage) {
             throw new LlmError(
               'Devin adapter received an image but no attachment store is available',
-              'INVALID_REQUEST',
+              'UNSUPPORTED_CONTENT',
             )
           }
           try {
-            const stored = await readImage(block.attachment, signal)
+            const stored = await c.readImage(block.attachment, signal)
             const base64 = Buffer.from(stored.data).toString('base64')
             const mimeType = stored.ref.mediaType
             prompt.images.push({ base64Data: base64, mimeType } as ExaCodeiumCommonPb_ImageData)
@@ -548,14 +712,13 @@ export class DevinAdapter extends LlmAdapter {
             )
           }
           break
-        case 'tool-call':
-          // assistant 消息中的工具调用在 convertMessage 中单独处理
+        case 'file':
+          // runtime 已把 file 块投影为文本；防御性占位
+          if (text.length > 0) text += '\n'
+          text += `[File: ${block.attachment.name ?? 'attachment'}]`
           break
-        case 'tool-result':
-          // tool result 的文本内容
-          for (const sub of block.content) {
-            if (sub.type === 'text') text += sub.text
-          }
+        default:
+          // tool-call / tool-addition / tool-removal 在各自消息处理中单独处理
           break
       }
     }
@@ -570,7 +733,9 @@ function convertToolDefinition(tool: ToolSchema): ExaChatPb_ChatToolDefinition {
   const schema = stripSchemaAnnotations(tool.parameters)
   return create(ExaChatPb_ChatToolDefinitionSchema, {
     name: tool.name,
-    description: tool.description || tool.name,
+    // 上游把 description 当工具分类提示 — 只回填工具名；
+    // 真正的说明通过 system prompt 的 <tool> 段注入（withToolDescriptions）。
+    description: tool.name,
     jsonSchemaString: schema,
   })
 }
@@ -659,6 +824,14 @@ function escapeXMLText(value: string): string {
 }
 
 // ─── 辅助函数 ───────────────────────────────────────────────────────────────
+
+function flattenText(content: readonly ContentBlock[]): string {
+  let text = ''
+  for (const block of content) {
+    if (block.type === 'text') text += block.text
+  }
+  return text
+}
 
 function randomHex(size: number): string {
   return randomBytes(size).toString('hex')

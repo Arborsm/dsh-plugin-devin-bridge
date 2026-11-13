@@ -11,11 +11,11 @@
  */
 
 import { useSyncExternalStore, useState, useCallback, type ReactNode } from 'react'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
-import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 
 /** 插件配置类型。 */
-interface DevinBridgeConfig {
+export interface DevinBridgeConfig {
   token: string
   baseUrl: string
   proxy: string
@@ -46,14 +46,10 @@ interface DiscoveredModel {
 
 /** card 组件接收的 props（由 slot inject 注入）。 */
 export interface DevinBridgeCardProps {
-  scope: SettingsScope<DevinBridgeConfig>
-  api: IApiClient
+  form: ConfigForm<DevinBridgeConfig>
+  /** 调用 Host 端注册的模型发现；返回 RemoteResult 包装的候选列表。 */
+  discover: () => Promise<RemoteResult<DiscoveredModel[]>>
 }
-
-/** Provider route key — 必须和 host 端 PROVIDER 一致。 */
-const PROVIDER = 'devin'
-/** Settings namespace — 必须和 host 端一致。 */
-const SETTINGS_NS = 'dsh-plugin-devin-bridge'
 
 /** 从 discovered candidate 的 name 解析 free/premium/multiplier。 */
 function parseCandidateInfo(model: DiscoveredModel): {
@@ -101,11 +97,11 @@ function groupCandidatesByFamily(models: DiscoveredModel[]): Array<{ family: str
  * @param props - settings scope 和 api 注入的 props。
  * @returns 配置表单。
  */
-export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode {
+export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): ReactNode {
   const snapshot = useSyncExternalStore(
-    (listener) => scope.subscribe(listener),
-    () => scope.getSnapshot(),
-    () => scope.getSnapshot(),
+    (listener) => form.subscribe(listener),
+    () => form.getSnapshot(),
+    () => form.getSnapshot(),
   )
 
   const [open, setOpen] = useState(false)
@@ -122,18 +118,17 @@ export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode
       setSaving(true)
       setError(null)
       try {
-        if (fieldValue === '' || fieldValue === undefined || fieldValue === null) {
-          await scope.unset(field)
-        } else {
-          await scope.set(field, fieldValue)
-        }
+        const accepted = fieldValue === '' || fieldValue === undefined || fieldValue === null
+          ? await form.unset(field)
+          : await form.set(field, fieldValue)
+        if (!accepted) setError('Settings write was refused by the host.')
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       } finally {
         setSaving(false)
       }
     },
-    [scope, snapshot.writable],
+    [form, snapshot.writable],
   )
 
   const handleSaveModels = useCallback(
@@ -186,7 +181,7 @@ export function DevinBridgeCard({ scope, api }: DevinBridgeCardProps): ReactNode
           <ModelManager
             models={value?.models ?? []}
             disabled={disabled}
-            api={api}
+            discover={discover}
             onSave={handleSaveModels}
             onError={setError}
           />
@@ -271,13 +266,13 @@ interface FieldDef {
 function ModelManager({
   models,
   disabled,
-  api,
+  discover,
   onSave,
   onError,
 }: {
   models: DevinBridgeConfig['models']
   disabled: boolean
-  api: IApiClient
+  discover: DevinBridgeCardProps['discover']
   onSave: (models: DevinBridgeConfig['models']) => Promise<void>
   onError: (msg: string | null) => void
 }): ReactNode {
@@ -293,16 +288,13 @@ function ModelManager({
     setFetching(true)
     onError(null)
     try {
-      // 传 provider: 'devin' 让 dsh-llm 路由到已注册的 adapter discovery
-      const response = await api.llm.discoverModels({
-        settingsNs: SETTINGS_NS,
-        provider: PROVIDER,
-      })
-      if (!response.result.ok) {
-        onError(response.result.error.message)
+      // remote.llm.discoverModels 路由到 host 端 registerModelDiscovery 的 adapter
+      const response = await discover()
+      if (!response.ok) {
+        onError(response.error.message)
         return
       }
-      const found = response.result.value.models
+      const found = response.value
       if (found.length === 0) {
         onError('The provider listed no models.')
         return

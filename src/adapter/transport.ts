@@ -3,6 +3,7 @@
 
 import type { Interceptor } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-node'
+import { attributionHeaders } from '@deepseek-ai/dsh-llm'
 import type { Agent } from 'node:http'
 
 export interface TransportConfig {
@@ -39,6 +40,10 @@ export function createDevinTransport(config: TransportConfig) {
 function authInterceptor(token: string): Interceptor {
   return (next) => async (req) => {
     req.header.set('Authorization', `Basic ${token}-${token}`)
+    // dsh 0.2 要求所有 provider 请求携带 adapter attribution headers
+    for (const [name, value] of Object.entries(attributionHeaders())) {
+      req.header.set(name, value)
+    }
     return next(req)
   }
 }

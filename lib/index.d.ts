@@ -1,8 +1,8 @@
 import z from "@deepseek-ai/schemastery";
-import { GenerateOptions, LlmAdapter, LlmDiscoveredModel, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, RetryPolicyConfig, StreamChunk } from "@deepseek-ai/dsh-llm";
+import { Volatile } from "@deepseek-ai/cosmokit";
+import { GenerateOptions, LlmAdapter, LlmDiscoveredModel, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, PreparedAdapterCall, ResolvedRetryPolicy, RetryPolicyConfig, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { Context } from "@deepseek-ai/cordis";
 import { ImageAttachmentRef, StoredImageAttachment } from "@deepseek-ai/dsh-attachment";
-//#region src/adapter/devin.d.ts
 interface DevinCatalogModel {
   id: string;
   name?: string;
@@ -12,6 +12,12 @@ interface DevinCatalogModel {
   supportsImages?: boolean;
   /** 模型系列标签（如 "GLM-5.2", "SWE-1.7"），从 model_family_metadata 提取。 */
   family?: string;
+  /** family metadata 中的推理档位名（小写，如 "high"/"max"/"none"）。 */
+  effort?: string;
+  /** family metadata "fast mode" 标记；lightning 变体不参与档位解析。 */
+  fastMode?: boolean;
+  /** 是否该 family 的默认档位（is_default_model_in_family）。 */
+  isDefaultInFamily?: boolean;
   /** 是否需要付费 plan。 */
   isPremium?: boolean;
   /** 是否当前处于促销期（promo_status.is_active）。 */
@@ -21,17 +27,19 @@ interface DevinCatalogModel {
 }
 interface DevinConnectionOptions {
   baseUrl: string;
+  /** 会话 token；空串表示未配置（元数据路径照常工作，发起请求时抛 AUTH）。 */
   token: string;
   proxy?: string;
   forceHttp1: boolean;
   models: readonly DevinCatalogModel[];
   defaultContextWindow: number;
   defaultMaxTokens: number;
+  retryPolicy?: RetryPolicyConfig;
   /** 可选的 attachment 读取器，用于获取图片字节 */
   readImage?: (ref: ImageAttachmentRef, signal?: AbortSignal) => Promise<StoredImageAttachment>;
 }
 interface DevinAdapterOptions {
-  /** 当前连接配置；每次操作时调用以获取最新值。 */
+  /** 当前连接配置；每次操作时调用以获取最新快照。 */
   options: () => DevinConnectionOptions;
 }
 declare class DevinAdapter extends LlmAdapter {
@@ -39,39 +47,49 @@ declare class DevinAdapter extends LlmAdapter {
   private cachedClient;
   private cachedClientKey;
   constructor(options: DevinAdapterOptions);
-  /** 当前连接配置（每次调用读取最新值）。 */
+  /** 当前连接配置（每次调用读取最新快照）。 */
   private conn;
   /** 获取或重建 Connect client（baseUrl/token/proxy 变更时自动重建）。 */
   private client;
-  providerInfo(_provider: string): LlmProviderInfo;
-  listModels(_provider: string): Promise<readonly LlmModelInfo[]>;
-  resolveModel(_provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
+  providerInfo(provider: string): LlmProviderInfo;
+  providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined;
+  listModels(provider: string): Promise<readonly LlmModelInfo[]>;
+  resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
+  /** 一次 adapter 生成（连接配置快照）下的 model metadata。 */
+  private modelInfo;
   /**
-   * 从 Devin 服务器拉取可用模型列表，供 settings 面板的
+   * 绑定 model metadata 与 dispatch 到同一配置快照：
+   * settings 在 prepare 与 stream 之间变更不会把两代配置混进一次调用。
+   */
+  prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall>;
+  /**
+   * 从 Devin 服务器拉取可用模型列表，供设置页的
    * "Fetch available models" 按钮调用。
    *
    * 同 family 的多个 effort 变体合并为一个基础模型（取 family default），
    * effort 走 dsh 的 reasoning effort 滑块控制，插件内部映射到实际 model_uid。
-   * 如 GLM-5.2 family → 只返回 glm-5-2，用户调 effort=high/medium/max/none
-   * 时插件映射到 glm-5-2 / glm-5-2-medium(无) / glm-5-2-max / glm-5-2-none。
    */
-  discoverModels(signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;
+  /**
+   * @param draft - 可选的一次性端点/凭证（设置页草稿 interrogation），
+   *   给出时覆盖持久配置；harness 不会存储这些值。
+   */
+  discoverModels(draft?: {
+    baseURL?: string;
+    apiKey?: string;
+  }, signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /
-   * description / family / effort / isPremium / isPromo / creditMultiplier。
-   *
-   * Devin 的 model_uid 已包含 effort（如 glm-5-2 = High, glm-5-2-max = Max,
-   * swe-1-7-medium = Medium），不需要单独的 reasoning effort API。
+   * description / family / effort / fastMode / defaultInFamily / isPremium /
+   * isPromo / creditMultiplier。
    */
   private fetchModelCatalog;
   stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+  private streamWithConn;
   private buildRequest;
   private convertMessage;
   private promptForContent;
 }
-//#endregion
-//#region src/adapter/credentials.d.ts
 /**
  * Devin CLI credentials.toml 的平台相关路径。
  * 支持环境变量 DEVIN_CREDENTIALS_PATH 覆盖。
@@ -92,11 +110,14 @@ interface DevinSession {
 declare function readDevinSession(options?: {
   credentialsPath?: string;
 }): DevinSession | undefined;
-//#endregion
-//#region src/index.d.ts
 declare const name = "dsh-plugin-devin-bridge";
 declare const inject: string[];
-interface Config {
+/**
+ * 用户可编辑的配置值（schema 解析后的 plain 形状）。
+ * 运行时这些字段都是 volatile：Loader 传入的 config 里每个字段是
+ * `Volatile<T>` 引用，`get()` 返回当前不可变快照。
+ */
+interface DevinBridgeConfig {
   /**
    * Devin session token，格式 devin-session-token$<...>。
    * 留空时自动从 Devin CLI 的 credentials.toml 读取（`devin auth login` 写入）。
@@ -114,11 +135,74 @@ interface Config {
   defaultMaxTokens: number;
   /** 可用模型列表。 */
   models: DevinCatalogModel[];
-  /** 重试策略。 */
-  retryPolicy: RetryPolicyConfig;
+  /** 重试策略；未配置时走 dsh 默认 normal 策略。 */
+  retryPolicy?: RetryPolicyConfig;
 }
-declare const Config: z<Config>;
+declare const Config: z<Schemastery.ObjectS<NoInfer<{
+  token: z<string, string, "volatile-defined">;
+  baseUrl: z<string, string, "volatile-defined">;
+  proxy: z<string, string, "volatile-defined">;
+  forceHttp1: z<boolean, boolean, "volatile-defined">;
+  defaultContextWindow: z<number, number, "volatile-defined">;
+  defaultMaxTokens: z<number, number, "volatile-defined">;
+  models: z<NoInfer<({
+    id?: string | null | undefined;
+    name?: string | null | undefined;
+    description?: string | null | undefined;
+    contextWindow?: number | null | undefined;
+    maxTokens?: number | null | undefined;
+    supportsImages?: boolean | null | undefined;
+    family?: string | null | undefined;
+    isPremium?: boolean | null | undefined;
+    isPromo?: boolean | null | undefined;
+    creditMultiplier?: number | null | undefined;
+  } & import("@deepseek-ai/cosmokit").Dict)[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
+    id: z<string, string, "defined">;
+    name: z<string, string, "plain">;
+    description: z<string, string, "plain">;
+    contextWindow: z<number, number, "plain">;
+    maxTokens: z<number, number, "plain">;
+    supportsImages: z<boolean, boolean, "plain">;
+    family: z<string, string, "plain">;
+    isPremium: z<boolean, boolean, "plain">;
+    isPromo: z<boolean, boolean, "plain">;
+    creditMultiplier: z<number, number, "plain">;
+  }>>[]>, "volatile-defined">;
+  retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
+}>>, Schemastery.ObjectT<NoInfer<{
+  token: z<string, string, "volatile-defined">;
+  baseUrl: z<string, string, "volatile-defined">;
+  proxy: z<string, string, "volatile-defined">;
+  forceHttp1: z<boolean, boolean, "volatile-defined">;
+  defaultContextWindow: z<number, number, "volatile-defined">;
+  defaultMaxTokens: z<number, number, "volatile-defined">;
+  models: z<NoInfer<({
+    id?: string | null | undefined;
+    name?: string | null | undefined;
+    description?: string | null | undefined;
+    contextWindow?: number | null | undefined;
+    maxTokens?: number | null | undefined;
+    supportsImages?: boolean | null | undefined;
+    family?: string | null | undefined;
+    isPremium?: boolean | null | undefined;
+    isPromo?: boolean | null | undefined;
+    creditMultiplier?: number | null | undefined;
+  } & import("@deepseek-ai/cosmokit").Dict)[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
+    id: z<string, string, "defined">;
+    name: z<string, string, "plain">;
+    description: z<string, string, "plain">;
+    contextWindow: z<number, number, "plain">;
+    maxTokens: z<number, number, "plain">;
+    supportsImages: z<boolean, boolean, "plain">;
+    family: z<string, string, "plain">;
+    isPremium: z<boolean, boolean, "plain">;
+    isPromo: z<boolean, boolean, "plain">;
+    creditMultiplier: z<number, number, "plain">;
+  }>>[]>, "volatile-defined">;
+  retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
+}>>, "plain">;
+/** Loader 传入的 config：volatile 字段是稳定引用而非裸值。 */
+type Config = { readonly [K in keyof DevinBridgeConfig]: DevinBridgeConfig[K] | Volatile<DevinBridgeConfig[K]>; };
 declare function apply(ctx: Context, config: Config): void;
-//#endregion
-export { Config, DevinAdapter, type DevinAdapterOptions, type DevinCatalogModel, type DevinConnectionOptions, type DevinSession, apply, devinCredentialsPath, inject, name, readDevinSession };
+export { Config, DevinAdapter, type DevinAdapterOptions, DevinBridgeConfig, type DevinCatalogModel, type DevinConnectionOptions, type DevinSession, apply, devinCredentialsPath, inject, name, readDevinSession };
 //# sourceMappingURL=index.d.ts.map

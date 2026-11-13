@@ -4,6 +4,8 @@
 
 一个 [dsh](https://github.com/deepseek-ai/deepseek-harness) LLM 适配器插件，将 [Devin](https://devin.ai) 的 Connect RPC API 桥接到 dsh 模型提供者系统，让 dsh 内部的 agent loop 能够使用 Devin 托管的模型（`glm-5.2`、`swe-1.7` 及 Devin 暴露的其他模型）作为后端。
 
+> **dsh 0.2+**：本版本面向 dsh 0.2 插件架构（volatile 配置、`configForms`、Typert remote、`settings.plugins.tab`），要求 `dsh >= 0.2.0-rc.1`；dsh 0.1 主机请使用 `0.1.x` 版本。
+
 ## 工作原理
 
 插件通过 dsh LLM seam（`LlmAdapter`）在 `ctx.llm` 上注册 `devin` provider route。当 dsh 的 agent loop 把请求路由到 `provider: devin` 时，适配器会：
@@ -65,7 +67,9 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
         jitterRatio: 0.1
 ```
 
-当 dsh settings 服务可用时，以上所有字段都可以通过设置面板在运行时动态调整——变更即时生效（`live` applies）。`token` 字段标记为 `role('secret')`，在返回给 wire surface 的 settings descriptor 中自动脱敏。
+当 dsh settings 服务可用时，以上所有字段都可以在 Plugins 设置页的 **Devin** tab 里运行时动态调整——全部字段都是 `volatile`，写入即时生效且不会 remount。`token` 字段标记为 `role('secret')`，在返回给 wire surface 的 settings descriptor 中自动脱敏。
+
+插件的 settings namespace 等于 composition entry id（`cordis.patch.yml` 中的 `devin-bridge`）；用其他 entry id 组合该插件时，namespace 也随之变化。
 
 ## 使用方式
 
@@ -73,22 +77,25 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 
 ## 功能特性
 
-- **动态模型目录**：通过 `GetCascadeModelConfigs` RPC 从 Devin 服务器实时拉取可用模型列表（5 分钟 TTL 缓存），与用户配置的静态模型合并。网络失败时优雅降级到静态配置。
-- **文本流式输出**：完整的文本增量流式传输与 block 组装
-- **推理/思考**：推理内容映射到 dsh 的 `reasoning` block 类型
-- **工具调用**：Devin 工具调用增量翻译为 dsh 的 `tool-call` block
-- **图片支持**：有视觉能力的模型通过 dsh 的 attachment 系统接受图片输入
-- **Token 用量**：输入/输出 token 计量上报给 dsh
+- **动态模型目录**：通过 `GetCascadeModelConfigs` RPC 从 Devin 服务器实时拉取可用模型列表，读取 `model_family_metadata` 将推理档位（`high`/`medium`/`max`/`none`）合并为同一基础模型，并识别 fast-mode 变体、promo/premium 标记、信用倍率和图片支持。
+- **推理档位滑块**：适配器在每个模型上暴露 dsh 的 `reasoning.efforts`，通过目录档位表把选中的 effort 解析为具体的 Devin `model_uid`（目录缺失时回退内置后缀映射）。
+- **文本流式输出**：完整的文本增量流式传输与索引化 block 组装
+- **推理/思考**：推理内容映射到 dsh 的 `reasoning` block 类型；thinking 签名经 `finish.replayState` 往返保存，assistant 历史回放时携带有效签名。
+- **工具调用**：Devin 工具调用增量翻译为 dsh 的 `tool-call` block；工具 schema 剥离自然语言注解，真正的描述经 system prompt 注入（上游把 wire `description` 字段当路由提示）。
+- **图片支持**：有视觉能力的模型通过 dsh 的 attachment 系统接受图片输入。遵循上游约定，图片只挂在当前轮（最后一条 assistant 之后）；历史图片降级为文本占位。
+- **Token 用量**：输入/输出/缓存 token 计量上报给 dsh
+- **重试策略**：provider 级 `retryPolicy` 配置经 dsh `resolveRetryPolicy` 解析（normal/always 模式）
 - **系统提示词清洗**：跨模型兼容的身份无关系统提示词重写
 - **代理支持**：可选的出站 HTTP/HTTPS/SOCKS5 代理
-- **设置面板集成**：通过 dsh settings 服务在运行时动态调整配置
+- **volatile 设置**：通过 Plugins 设置页运行时调整配置，写入即时生效
 - **凭证自动检测**：未显式配置 token 时自动读取 `devin auth login` 的凭证
 
 ## 架构
 
 ```
 src/
-├── index.ts              # Cordis 插件入口：Config schema、设置面板接入、ctx.llm 注册
+├── index.ts              # Cordis 插件入口：volatile Config schema、provider/adapter/discovery 注册
+├── client/               # 浏览器端：Plugins 设置页 "Devin" tab（configForms + remote.llm）
 ├── adapter/
 │   ├── devin.ts          # DevinAdapter：GenerateOptions → Devin RPC → StreamChunk
 │   ├── decoder.ts        # GetChatMessageResponse → StreamChunk 转换
