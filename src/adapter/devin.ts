@@ -292,6 +292,7 @@ export class DevinAdapter extends LlmAdapter {
   // transport/client 缓存：配置变更时重建
   private cachedClient: ReturnType<typeof createClient<typeof ApiServerService>> | null = null
   private cachedClientKey = ''
+  private catalogCache: { key: string; at: number; models: DevinCatalogModel[] } | null = null
 
   constructor(options: DevinAdapterOptions) {
     super()
@@ -455,6 +456,54 @@ export class DevinAdapter extends LlmAdapter {
     }))
   }
 
+  /**
+   * 惰性目录兜底：解析出来仍是裸 id、且配置里没有可信的真实-uid 条目时，
+   * 拉一次上游 family 目录合并后再走 resolveModelUid。
+   * 覆盖 models 为空（新环境从未采纳目录）和条目缺 tiers（旧版/手写配置）
+   * 两种把裸 base id（如 swe-2、swe-2-flash）直接发给上游的场景——
+   * 上游不存在这些 uid，会报 permission_denied。
+   */
+  private async withResolvableModel(options: GenerateOptions, c: DevinConnectionOptions): Promise<DevinConnectionOptions> {
+    const bare = options.model.includes('/') ? options.model.slice(options.model.lastIndexOf('/') + 1) : options.model
+    const uid = resolveModelUid(options.model, options.reasoningEffort as unknown as string | undefined, c.models)
+    if (uid !== bare) return c
+    const entry = c.models.find((m) => m.id === bare)
+    // 无 tiers/family/effort 的条目视为真实 uid（如 kimi-k2-6），直接信任
+    if (entry && !entry.tiers && !entry.family && !entry.effort) return c
+    try {
+      const dynamic = await this.dynamicCatalog(c, options.signal)
+      const merged = [...dynamic, ...c.models.filter((m) => !dynamic.some((d) => d.id === m.id))]
+      return { ...c, models: merged }
+    } catch {
+      return c
+    }
+  }
+
+  /** family 合并目录，按连接缓存 5 分钟；catalog() 是用户主动刷新，不走这里。 */
+  private async dynamicCatalog(c: DevinConnectionOptions, signal?: AbortSignal): Promise<DevinCatalogModel[]> {
+    const key = `${c.baseUrl}\0${c.token}`
+    if (this.catalogCache?.key === key && Date.now() - this.catalogCache.at < 300_000) {
+      return this.catalogCache.models
+    }
+    const dynamic = await this.fetchModelCatalog(c, signal)
+    const models = mergeFamilies(dynamic).map(({ member: m, tiers, defaultEffort }) => ({
+      id: familyBaseId(m),
+      name: m.family ?? m.name ?? m.id,
+      ...m.description ? { description: m.description } : {},
+      ...m.contextWindow ? { contextWindow: m.contextWindow } : {},
+      ...m.maxTokens ? { maxTokens: m.maxTokens } : {},
+      supportsImages: m.supportsImages,
+      ...m.family ? { family: m.family } : {},
+      ...Object.keys(tiers).length > 0 ? { tiers } : {},
+      ...defaultEffort ? { defaultEffort } : {},
+      isPremium: m.isPremium,
+      isPromo: m.isPromo,
+      ...m.creditMultiplier !== undefined ? { creditMultiplier: m.creditMultiplier } : {},
+    }))
+    this.catalogCache = { key, at: Date.now(), models }
+    return models
+  }
+
   // ─── 动态模型目录（内部，仅 discoverModels 使用）──────────────────────────
 
   /**
@@ -525,8 +574,9 @@ export class DevinAdapter extends LlmAdapter {
 
   private async *streamWithConn(
     options: GenerateOptions,
-    c: DevinConnectionOptions,
+    conn: DevinConnectionOptions,
   ): AsyncIterable<StreamChunk> {
+    const c = await this.withResolvableModel(options, conn)
     // 构建 Devin 请求
     let protoRequest: GetChatMessageRequest
     try {

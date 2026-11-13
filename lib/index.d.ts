@@ -52,6 +52,7 @@ declare class DevinAdapter extends LlmAdapter {
   private readonly config;
   private cachedClient;
   private cachedClientKey;
+  private catalogCache;
   constructor(options: DevinAdapterOptions);
   /** 当前连接配置（每次调用读取最新快照）。 */
   private conn;
@@ -88,6 +89,16 @@ declare class DevinAdapter extends LlmAdapter {
    * 带 tiers（effort→uid）与 defaultEffort，供设置页采纳进配置。
    */
   catalog(signal?: AbortSignal): Promise<DevinCatalogModel[]>;
+  /**
+   * 惰性目录兜底：解析出来仍是裸 id、且配置里没有可信的真实-uid 条目时，
+   * 拉一次上游 family 目录合并后再走 resolveModelUid。
+   * 覆盖 models 为空（新环境从未采纳目录）和条目缺 tiers（旧版/手写配置）
+   * 两种把裸 base id（如 swe-2、swe-2-flash）直接发给上游的场景——
+   * 上游不存在这些 uid，会报 permission_denied。
+   */
+  private withResolvableModel;
+  /** family 合并目录，按连接缓存 5 分钟；catalog() 是用户主动刷新，不走这里。 */
+  private dynamicCatalog;
   /**
    * 调用 GetCascadeModelConfigs RPC 从 Devin 服务器拉取可用模型目录。
    * 过滤掉 disabled 的模型，提取 uid / label / supports_images / max_tokens /

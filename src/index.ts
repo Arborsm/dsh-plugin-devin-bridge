@@ -51,6 +51,8 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
     supportsImages: false,
     family: 'SWE-2 Flash',
     isPromo: true,
+    tiers: { medium: 'swe-2-flash-medium', high: 'swe-2-flash-high', max: 'swe-2-flash-max' },
+    defaultEffort: 'medium',
     creditMultiplier: 4,
   },
 ]
