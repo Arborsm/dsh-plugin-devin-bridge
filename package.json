@@ -5,8 +5,10 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
+  "icon": "icon.svg",
   "files": [
     "lib",
+    "icon.svg",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
