@@ -99,6 +99,8 @@ export interface DevinConnectionOptions {
   proxy?: string
   forceHttp1: boolean
   models: readonly DevinCatalogModel[]
+  /** 设置页关掉的模型 id；picker 不显示，解析/调用不受影响。 */
+  hiddenModels?: readonly string[]
   defaultContextWindow: number
   defaultMaxTokens: number
   retryPolicy?: RetryPolicyConfig
@@ -277,7 +279,9 @@ export class DevinAdapter extends LlmAdapter {
   }
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return this.conn().models.map((m) => ({
+    const conn = this.conn()
+    const hidden = new Set(conn.hiddenModels ?? [])
+    return conn.models.filter((m) => !hidden.has(m.id)).map((m) => ({
       provider,
       id: m.id,
       name: m.name ?? m.id,

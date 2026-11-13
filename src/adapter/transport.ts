@@ -52,7 +52,7 @@ function authInterceptor(token: string): Interceptor {
  * 根据代理 URL 创建合适的 Agent。
  * 支持 http://, https://, socks5://, socks5h:// 协议。
  */
-function createProxyAgent(proxyUrl: string | undefined, baseUrl: string): Agent | undefined {
+export function createProxyAgent(proxyUrl: string | undefined, baseUrl: string): Agent | undefined {
   if (!proxyUrl) return undefined
 
   const isHttps = baseUrl.startsWith('https://')

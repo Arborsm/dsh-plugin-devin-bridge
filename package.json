@@ -24,7 +24,9 @@
       "inject": [
         "slots",
         "configForms",
-        "remote.llm"
+        "remote.llm",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-model-selection"
       ],
       "platform": "web"
     }
@@ -72,6 +74,8 @@
     "@deepseek-ai/cosmokit": "^1.9.0",
     "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.3",
     "@deepseek-ai/dsh-attachment": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-client-ui-model-selection": "0.2.2-rc.3",
     "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.2-rc.3",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.2-rc.3",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.3",
@@ -92,6 +96,7 @@
       "default": "./lib/index.js"
     },
     "./client": "./lib/client.js",
+    "./typert": "./lib/typert.host.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   }

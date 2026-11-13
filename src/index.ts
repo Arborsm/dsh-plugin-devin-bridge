@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { ImageAttachmentRef, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { DevinAdapter, type DevinAdapterOptions, type DevinCatalogModel, type DevinConnectionOptions } from './adapter/devin.ts'
+import { fetchQuota, type DevinQuota } from './adapter/quota.ts'
 import { readDevinSession, DEFAULT_API_SERVER_URL } from './adapter/credentials.ts'
 
 export const name = 'dsh-plugin-devin-bridge'
@@ -77,6 +78,8 @@ export interface DevinBridgeConfig {
   defaultMaxTokens: number
   /** 可用模型列表。 */
   models: DevinCatalogModel[]
+  /** 设置页里被关掉的模型 id；picker 不再显示（仍可解析/调用）。 */
+  hiddenModels: string[]
   /** 重试策略；未配置时走 dsh 默认 normal 策略。 */
   retryPolicy?: RetryPolicyConfig
 }
@@ -102,6 +105,8 @@ export const Config = z.object({
   defaultContextWindow: z.number().step(1).min(1).default(128_000).volatile(),
   defaultMaxTokens: z.number().step(1).min(1).default(128_000).volatile(),
   models: z.array(catalogModel).default(DEFAULT_MODELS).volatile(),
+  /** 设置页模型目录里被关掉的模型 id；listModels 过滤，picker 不再显示。 */
+  hiddenModels: z.array(z.string()).default([]).volatile(),
   retryPolicy: RetryPolicySchema.volatile(),
 })
 
@@ -144,6 +149,7 @@ export function apply(ctx: Context, config: Config): void {
     defaultContextWindow: readVolatile(config.defaultContextWindow) ?? 128_000,
     defaultMaxTokens: readVolatile(config.defaultMaxTokens) ?? 128_000,
     models: [...(readVolatile(config.models) ?? DEFAULT_MODELS)],
+    hiddenModels: [...(readVolatile(config.hiddenModels) ?? [])],
     retryPolicy: readVolatile(config.retryPolicy),
   })
 
@@ -191,6 +197,7 @@ export function apply(ctx: Context, config: Config): void {
         proxy: c.proxy || undefined,
         forceHttp1: c.forceHttp1,
         models: c.models,
+        hiddenModels: c.hiddenModels,
         defaultContextWindow: c.defaultContextWindow,
         defaultMaxTokens: c.defaultMaxTokens,
         retryPolicy: c.retryPolicy,
@@ -230,8 +237,30 @@ export function apply(ctx: Context, config: Config): void {
       signal,
     ),
   )
+
+  // remote.devin：浏览器端读取账户额度；token 留在 Host 进程不外泄。
+  const fetchWithConn = (fresh: boolean): Promise<DevinQuota> => {
+    const { token, baseUrl } = resolveConn()
+    if (!token) throw new Error('devin-bridge: no Devin session token found')
+    const c = source()
+    return fetchQuota({ baseUrl, token, proxy: c.proxy || undefined, fresh })
+  }
+  const service = {
+    quota: (): Promise<DevinQuota> => fetchWithConn(false),
+    refreshQuota: (): Promise<DevinQuota> => fetchWithConn(true),
+  }
+  Object.defineProperty(service, 'typertRemote', {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: { service, serviceKey: 'devin', namespace: 'devin' },
+  })
+  if (typeof ctx.provide === 'function') {
+    ctx.provide('devin', service)
+  }
 }
 
 export { DevinAdapter } from './adapter/devin.ts'
 export type { DevinCatalogModel, DevinAdapterOptions, DevinConnectionOptions } from './adapter/devin.ts'
+export { fetchQuota, type DevinQuota } from './adapter/quota.ts'
 export { readDevinSession, devinCredentialsPath, type DevinSession } from './adapter/credentials.ts'

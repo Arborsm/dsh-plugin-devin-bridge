@@ -28,7 +28,7 @@ const PLUGIN_ID = 'dsh-plugin-devin-bridge'
 
 export default [
   {
-    entry: { index: 'src/index.ts' },
+    entry: { index: 'src/index.ts', 'typert.host': 'src/typert.ts' },
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',

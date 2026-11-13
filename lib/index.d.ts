@@ -32,6 +32,8 @@ interface DevinConnectionOptions {
   proxy?: string;
   forceHttp1: boolean;
   models: readonly DevinCatalogModel[];
+  /** 设置页关掉的模型 id；picker 不显示，解析/调用不受影响。 */
+  hiddenModels?: readonly string[];
   defaultContextWindow: number;
   defaultMaxTokens: number;
   retryPolicy?: RetryPolicyConfig;
@@ -90,6 +92,27 @@ declare class DevinAdapter extends LlmAdapter {
   private convertMessage;
   private promptForContent;
 }
+/** 额度快照（RemoteResult 透传给客户端）。 */
+interface DevinQuota {
+  plan?: string;
+  dailyRemainingPercent?: number;
+  weeklyRemainingPercent?: number;
+  dailyResetAt?: number;
+  weeklyResetAt?: number;
+  sampledAt: number;
+  stale: boolean;
+}
+interface QuotaOptions {
+  baseUrl: string;
+  token: string;
+  proxy?: string;
+  /** 跳过缓存强制刷新（点击胶囊/刷新按钮）。 */
+  fresh?: boolean;
+}
+/**
+ * 读取账户额度。缓存命中直接返回；刷新失败且有旧快照时返回 stale 副本。
+ */
+declare function fetchQuota(options: QuotaOptions): Promise<DevinQuota>;
 /**
  * Devin CLI credentials.toml 的平台相关路径。
  * 支持环境变量 DEVIN_CREDENTIALS_PATH 覆盖。
@@ -135,6 +158,8 @@ interface DevinBridgeConfig {
   defaultMaxTokens: number;
   /** 可用模型列表。 */
   models: DevinCatalogModel[];
+  /** 设置页里被关掉的模型 id；picker 不再显示（仍可解析/调用）。 */
+  hiddenModels: string[];
   /** 重试策略；未配置时走 dsh 默认 normal 策略。 */
   retryPolicy?: RetryPolicyConfig;
 }
@@ -168,6 +193,8 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     isPromo: z<boolean, boolean, "plain">;
     creditMultiplier: z<number, number, "plain">;
   }>>[]>, "volatile-defined">;
+  /** 设置页模型目录里被关掉的模型 id；listModels 过滤，picker 不再显示。 */
+  hiddenModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
   retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
 }>>, Schemastery.ObjectT<NoInfer<{
   token: z<string, string, "volatile-defined">;
@@ -199,10 +226,12 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     isPromo: z<boolean, boolean, "plain">;
     creditMultiplier: z<number, number, "plain">;
   }>>[]>, "volatile-defined">;
+  /** 设置页模型目录里被关掉的模型 id；listModels 过滤，picker 不再显示。 */
+  hiddenModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
   retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
 }>>, "plain">;
 /** Loader 传入的 config：volatile 字段是稳定引用而非裸值。 */
 type Config = { readonly [K in keyof DevinBridgeConfig]: DevinBridgeConfig[K] | Volatile<DevinBridgeConfig[K]>; };
 declare function apply(ctx: Context, config: Config): void;
-export { Config, DevinAdapter, type DevinAdapterOptions, DevinBridgeConfig, type DevinCatalogModel, type DevinConnectionOptions, type DevinSession, apply, devinCredentialsPath, inject, name, readDevinSession };
+export { Config, DevinAdapter, type DevinAdapterOptions, DevinBridgeConfig, type DevinCatalogModel, type DevinConnectionOptions, type DevinQuota, type DevinSession, apply, devinCredentialsPath, fetchQuota, inject, name, readDevinSession };
 //# sourceMappingURL=index.d.ts.map
