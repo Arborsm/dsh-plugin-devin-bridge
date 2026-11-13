@@ -44,8 +44,10 @@ interface DiscoveredModel {
   maxTokens?: number
 }
 
-/** card 组件接收的 props（由 slot inject 注入）。 */
+/** card 组件接收的 props（owner 传 view，slot inject 注入 form/discover）。 */
 export interface DevinBridgeCardProps {
+  /** 插件管理器传入的视图模式；bundle 配置页固定 'page'。 */
+  view?: 'summary' | 'page'
   form: ConfigForm<DevinBridgeConfig>
   /** 调用 Host 端注册的模型发现；返回 RemoteResult 包装的候选列表。 */
   discover: () => Promise<RemoteResult<DiscoveredModel[]>>
@@ -140,26 +142,26 @@ export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): React
 
   if (loading) {
     return (
-      <li className="devin-bridge-card">
+      <div className="devin-bridge-card">
         <div className="devin-bridge-card-header">Devin Bridge</div>
         <p className="devin-bridge-hint">Loading…</p>
         {STYLES}
-      </li>
+      </div>
     )
   }
 
   if (snapshot.status === 'unavailable') {
     return (
-      <li className="devin-bridge-card">
+      <div className="devin-bridge-card">
         <div className="devin-bridge-card-header">Devin Bridge</div>
         <p className="devin-bridge-hint">Settings unavailable (running in memory mode).</p>
         {STYLES}
-      </li>
+      </div>
     )
   }
 
   return (
-    <li className="devin-bridge-card">
+    <div className="devin-bridge-card">
       <button
         type="button"
         className="devin-bridge-card-header"
@@ -167,7 +169,7 @@ export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): React
         onClick={() => setOpen(!open)}
       >
         <span className="devin-bridge-card-title">Devin Bridge</span>
-        <span className="devin-bridge-card-desc">Devin Connect LLM adapter (glm-5.2 / swe-1.7)</span>
+        <span className="devin-bridge-card-desc">Devin Connect LLM adapter (swe-2 / glm-5.3)</span>
         <span className="devin-bridge-chevron">{open ? '▼' : '▶'}</span>
       </button>
 
@@ -205,7 +207,7 @@ export function DevinBridgeCard({ form, discover }: DevinBridgeCardProps): React
       )}
 
       {STYLES}
-    </li>
+    </div>
   )
 }
 

@@ -1,7 +1,7 @@
 // Devin Connect 适配器：dsh GenerateOptions → Devin RPC → StreamChunk。
 // 实现 dsh-llm 0.2 的 LlmAdapter 接口，注册为 `devin` provider route。
 //
-// 协议细节对照 Green-hats/devin-2api-lite：
+// Devin Connect 协议要点：
 //   - GetChatMessage metadata.os = 'mac'，GetCascadeModelConfigs = 'win'
 //   - tool definition 的 description 回填工具名（上游把它当分类提示），
 //     真正的工具说明经 system prompt 的 <tool> 段注入
@@ -60,6 +60,12 @@ import { DevinStreamDecoder, wrapConnectError } from './decoder.ts'
 
 const CLIENT_NAME = 'chisel'
 const CLIENT_VERSION = '3000.2.17'
+
+/**
+ * 输出 token 上限。catalog 的 `maxTokens` 字段实际是 context window（262k），
+ * 不是输出上限；请求侧以此为天花板，更小值照常放行。
+ */
+const MAX_OUTPUT_TOKENS = 128_000
 
 // ─── 配置类型 ───────────────────────────────────────────────────────────────
 
@@ -301,7 +307,7 @@ export class DevinAdapter extends LlmAdapter {
       ...configured?.description ? { description: configured.description } : {},
       inputModalities: configured?.supportsImages ? ['text' as const, 'image' as const] : ['text' as const],
       context: { contextWindow },
-      defaultMaxTokens: configured?.maxTokens ?? c.defaultMaxTokens,
+      defaultMaxTokens: Math.min(configured?.maxTokens ?? c.defaultMaxTokens, MAX_OUTPUT_TOKENS),
       // 暴露 effort 滑块给 dsh；插件内部在 stream 时映射到实际 model_uid
       reasoning: {
         efforts,
@@ -416,7 +422,7 @@ export class DevinAdapter extends LlmAdapter {
         id: uid,
         ...config.label ? { name: config.label } : {},
         ...config.description ? { description: config.description } : {},
-        ...config.maxTokens > 0 ? { contextWindow: config.maxTokens, maxTokens: config.maxTokens } : {},
+        ...config.maxTokens > 0 ? { contextWindow: config.maxTokens, maxTokens: MAX_OUTPUT_TOKENS } : {},
         supportsImages: config.supportsImages,
         ...family ? { family } : {},
         ...effort ? { effort } : {},
@@ -530,7 +536,7 @@ export class DevinAdapter extends LlmAdapter {
       requestType: ChatMessageRequestType.CASCADE,
       configuration: create(ExaCodeiumCommonPb_CompletionConfigurationSchema, {
         numCompletions: 1n,
-        maxTokens: BigInt(options.maxTokens ?? c.defaultMaxTokens),
+        maxTokens: BigInt(Math.min(options.maxTokens ?? c.defaultMaxTokens, MAX_OUTPUT_TOKENS)),
         maxNewlines: 400n,
         temperature: options.temperature ?? 1,
         topK: 40n,

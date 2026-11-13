@@ -1,7 +1,7 @@
 // Devin protobuf 响应帧 → dsh StreamChunk 转换。
-// 翻译自 devin-2api-lite 的 response decoder，输出 dsh-llm 0.2 的 StreamChunk 协议。
+// Devin 流式响应解码器，输出 dsh-llm 0.2 的 StreamChunk 协议。
 //
-// 与 lite 对齐的行为：
+// 行为要点：
 //   - thinking 到达时先收尾打开的 text 块
 //   - delta_signature 累计进 thinking 签名，随 finish.replayState 回传给 history
 //   - 无 stop reason 且无任何内容时按 EMPTY_RESPONSE 失败
@@ -80,7 +80,7 @@ export class DevinStreamDecoder {
     }
 
     if (response.deltaThinking || response.deltaSignature || response.thinkingRedacted) {
-      // thinking 到达时收尾打开的 text 块（与 lite 一致）
+      // thinking 到达时收尾打开的 text 块
       chunks.push(...this.endText())
       if (!this.reasoningStarted) {
         this.reasoningIndex = this.nextIndex++
@@ -183,7 +183,7 @@ export class DevinStreamDecoder {
       return chunks
     }
 
-    // 无 stop reason 且没有任何内容 → 空响应（与 lite 的 fail 一致）
+    // 无 stop reason 且没有任何内容 → 空响应
     if (!this.hasStopReason && !this.hasContent) {
       chunks.push({
         type: 'finish',

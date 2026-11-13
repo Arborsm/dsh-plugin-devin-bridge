@@ -4,7 +4,7 @@
 
 一个 [dsh](https://github.com/deepseek-ai/deepseek-harness) LLM 适配器插件，将 [Devin](https://devin.ai) 的 Connect RPC API 桥接到 dsh 模型提供者系统，让 dsh 内部的 agent loop 能够使用 Devin 托管的模型（`glm-5.2`、`swe-1.7` 及 Devin 暴露的其他模型）作为后端。
 
-> **dsh 0.2+**：本版本面向 dsh 0.2 插件架构（volatile 配置、`configForms`、Typert remote、`settings.plugins.tab`），要求 `dsh >= 0.2.0-rc.1`；dsh 0.1 主机请使用 `0.1.x` 版本。
+> **dsh 0.2+**：本版本面向 dsh 0.2 插件架构（volatile 配置、`configForms`、Typert remote、`plugins.bundle.config`），要求 `dsh >= 0.2.0-rc.1`；dsh 0.1 主机请使用 `0.1.x` 版本。
 
 ## 工作原理
 
@@ -46,18 +46,18 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
     proxy: ""  # 可选：出站代理 URL（http/https/socks5）
     forceHttp1: true  # 可选：强制 HTTP/1.1（默认 true）
     defaultContextWindow: 128000  # 可选：默认上下文窗口
-    defaultMaxTokens: 16384  # 可选：默认最大输出 token
-    models:  # 可选；默认包含 glm-5-2 和 swe-1-7
-      - id: "glm-5-2"
-        name: "GLM-5.2"
-        contextWindow: 128000
-        maxTokens: 16384
-        supportsImages: false
-      - id: "swe-1-7"
-        name: "SWE-1.7"
-        contextWindow: 128000
-        maxTokens: 16384
+    defaultMaxTokens: 128000  # 可选：默认最大输出 token
+    models:  # 可选；默认 swe-2 和 swe-2-flash
+      - id: "swe-2"
+        name: "SWE-2"
+        contextWindow: 262000
+        maxTokens: 128000
         supportsImages: true
+      - id: "swe-2-flash"
+        name: "SWE-2 Flash"
+        contextWindow: 262144
+        maxTokens: 128000
+        supportsImages: false
     retryPolicy:  # 可选
       mode: normal
       maxRetries: 3
@@ -67,7 +67,7 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
         jitterRatio: 0.1
 ```
 
-当 dsh settings 服务可用时，以上所有字段都可以在 Plugins 设置页的 **Devin** tab 里运行时动态调整——全部字段都是 `volatile`，写入即时生效且不会 remount。`token` 字段标记为 `role('secret')`，在返回给 wire surface 的 settings descriptor 中自动脱敏。
+当 dsh settings 服务可用时，以上所有字段都可以在 插件详情页（插件 → dsh-plugin-devin-bridge）的 **Devin Bridge** 卡片 里运行时动态调整——全部字段都是 `volatile`，写入即时生效且不会 remount。`token` 字段标记为 `role('secret')`，在返回给 wire surface 的 settings descriptor 中自动脱敏。
 
 插件的 settings namespace 等于 composition entry id（`cordis.patch.yml` 中的 `devin-bridge`）；用其他 entry id 组合该插件时，namespace 也随之变化。
 
@@ -87,7 +87,7 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 - **重试策略**：provider 级 `retryPolicy` 配置经 dsh `resolveRetryPolicy` 解析（normal/always 模式）
 - **系统提示词清洗**：跨模型兼容的身份无关系统提示词重写
 - **代理支持**：可选的出站 HTTP/HTTPS/SOCKS5 代理
-- **volatile 设置**：通过 Plugins 设置页运行时调整配置，写入即时生效
+- **volatile 设置**：通过插件详情页运行时调整配置，写入即时生效
 - **凭证自动检测**：未显式配置 token 时自动读取 `devin auth login` 的凭证
 
 ## 架构
@@ -95,7 +95,7 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 ```
 src/
 ├── index.ts              # Cordis 插件入口：volatile Config schema、provider/adapter/discovery 注册
-├── client/               # 浏览器端：Plugins 设置页 "Devin" tab（configForms + remote.llm）
+├── client/               # 浏览器端：bundle 详情页 plugins.bundle.config 卡片（configForms + remote.llm）
 ├── adapter/
 │   ├── devin.ts          # DevinAdapter：GenerateOptions → Devin RPC → StreamChunk
 │   ├── decoder.ts        # GetChatMessageResponse → StreamChunk 转换

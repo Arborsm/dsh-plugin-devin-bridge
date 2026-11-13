@@ -4,7 +4,7 @@
 # 让 dsh 内部的 agent loop 能使用 Devin 托管的模型。
 #
 # entry id（下面的 `devin-bridge`）就是插件的 settings namespace：
-# 所有 config 字段都是 volatile，Plugins 设置页 "Devin" tab 的写入即时生效。
+# 所有 config 字段都是 volatile，插件详情页 Devin Bridge 卡片的写入即时生效。
 #
 # token 留空时自动从 Devin CLI 的 credentials.toml 读取（`devin auth login` 写入），
 # 也可在设置页动态配置。
@@ -19,19 +19,19 @@
         proxy: ""
         forceHttp1: true
         defaultContextWindow: 128000
-        defaultMaxTokens: 16384
+        defaultMaxTokens: 128000
         models:
           - id: "swe-2"
             name: "SWE-2"
             description: "Devin-hosted SWE-2 coding model"
             contextWindow: 262000
-            maxTokens: 262000
+            maxTokens: 128000
             supportsImages: true
           - id: "swe-2-flash"
             name: "SWE-2 Flash"
             description: "Devin-hosted SWE-2 Flash fast coding model"
             contextWindow: 262144
-            maxTokens: 262144
+            maxTokens: 128000
             supportsImages: false
         retryPolicy:
           mode: normal

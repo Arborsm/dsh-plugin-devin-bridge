@@ -4,7 +4,7 @@
 
 A [dsh](https://github.com/deepseek-ai/deepseek-harness) LLM adapter plugin that bridges [Devin](https://devin.ai)'s Connect RPC API into the dsh model provider system, enabling dsh's internal agent loop to use Devin-hosted models (`glm-5.2`, `swe-1.7`, and any other model Devin exposes) as backends.
 
-> **dsh 0.2+**: this release targets the dsh 0.2 plugin architecture (volatile config, `configForms`, Typert remotes, `settings.plugins.tab`). It requires `dsh >= 0.2.0-rc.1`; for dsh 0.1 hosts use the `0.1.x` line.
+> **dsh 0.2+**: this release targets the dsh 0.2 plugin architecture (volatile config, `configForms`, Typert remotes, `plugins.bundle.config`). It requires `dsh >= 0.2.0-rc.1`; for dsh 0.1 hosts use the `0.1.x` line.
 
 ## How it works
 
@@ -46,18 +46,18 @@ All fields are optional — the plugin works out of the box once a token is avai
     proxy: ""  # optional: outbound proxy URL (http/https/socks5)
     forceHttp1: true  # optional: force HTTP/1.1 (default true)
     defaultContextWindow: 128000  # optional: fallback context window
-    defaultMaxTokens: 16384  # optional: fallback max output tokens
-    models:  # optional; defaults to glm-5-2 and swe-1-7
-      - id: "glm-5-2"
-        name: "GLM-5.2"
-        contextWindow: 128000
-        maxTokens: 16384
-        supportsImages: false
-      - id: "swe-1-7"
-        name: "SWE-1.7"
-        contextWindow: 128000
-        maxTokens: 16384
+    defaultMaxTokens: 128000  # optional: fallback max output tokens
+    models:  # optional; defaults to swe-2 and swe-2-flash
+      - id: "swe-2"
+        name: "SWE-2"
+        contextWindow: 262000
+        maxTokens: 128000
         supportsImages: true
+      - id: "swe-2-flash"
+        name: "SWE-2 Flash"
+        contextWindow: 262144
+        maxTokens: 128000
+        supportsImages: false
     retryPolicy:  # optional
       mode: normal
       maxRetries: 3
@@ -67,7 +67,7 @@ All fields are optional — the plugin works out of the box once a token is avai
         jitterRatio: 0.1
 ```
 
-When the dsh settings service is available, all of the above can be adjusted at runtime through the **Devin** tab on the Plugins settings page — every field is `volatile`, so writes land on the running plugin without a remount. The `token` field is marked `role('secret')` so it is automatically redacted in settings descriptors returned to wire surfaces.
+When the dsh settings service is available, all of the above can be adjusted at runtime in the **Devin Bridge** card on the plugin's detail page (Plugins → dsh-plugin-devin-bridge) — every field is `volatile`, so writes land on the running plugin without a remount. The `token` field is marked `role('secret')` so it is automatically redacted in settings descriptors returned to wire surfaces.
 
 The plugin's settings namespace equals its composition entry id (`devin-bridge` in `cordis.patch.yml`); if you compose the plugin under a different entry id, that id becomes the namespace.
 
@@ -95,7 +95,7 @@ Once configured, dsh's model selector will show `Devin` as a provider with avail
 ```
 src/
 ├── index.ts              # Cordis plugin entry: volatile Config schema, provider/adapter/discovery registration
-├── client/               # Browser half: settings.plugins.tab "Devin" card (configForms + remote.llm)
+├── client/               # Browser half: plugins.bundle.config card on the bundle detail page (configForms + remote.llm)
 ├── adapter/
 │   ├── devin.ts          # DevinAdapter: GenerateOptions → Devin RPC → StreamChunk
 │   ├── decoder.ts        # GetChatMessageResponse → StreamChunk translation
