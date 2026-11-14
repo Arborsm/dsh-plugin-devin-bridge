@@ -69,6 +69,16 @@ const CLIENT_VERSION = '3000.2.17'
  */
 const MAX_OUTPUT_TOKENS = 128_000
 
+/**
+ * catalog 模型的输出预留：窗口的 1/4，封顶 {@link MAX_OUTPUT_TOKENS}。
+ * `maxTokens` 同时充当 compaction 的输出预留 O，小窗口模型填 128k 会把
+ * 自动压缩阈值压到窗口的 3%–26%；1/4 比例与官方 deepseek adapter 一致
+ * （1M 窗口 / 256k 预留），262k 模型得 ~131k 历史预算，≥512k 到顶 128k。
+ */
+function maxOutputForWindow(contextWindow: number): number {
+  return Math.min(MAX_OUTPUT_TOKENS, Math.floor(contextWindow / 4))
+}
+
 // ─── 配置类型 ───────────────────────────────────────────────────────────────
 
 export interface DevinCatalogModel {
@@ -559,7 +569,7 @@ export class DevinAdapter extends LlmAdapter {
         id: uid,
         ...config.label ? { name: config.label } : {},
         ...config.description ? { description: config.description } : {},
-        ...config.maxTokens > 0 ? { contextWindow: config.maxTokens, maxTokens: MAX_OUTPUT_TOKENS } : {},
+        ...config.maxTokens > 0 ? { contextWindow: config.maxTokens, maxTokens: maxOutputForWindow(config.maxTokens) } : {},
         supportsImages: config.supportsImages,
         ...family ? { family } : {},
         ...effort ? { effort } : {},

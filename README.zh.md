@@ -46,17 +46,17 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
     proxy: ""  # 可选：出站代理 URL（http/https/socks5）
     forceHttp1: true  # 可选：强制 HTTP/1.1（默认 true）
     defaultContextWindow: 128000  # 可选：默认上下文窗口
-    defaultMaxTokens: 128000  # 可选：默认最大输出 token
+    defaultMaxTokens: 65536  # 可选：默认最大输出 token
     models:  # 可选；默认 swe-2 和 swe-2-flash
       - id: "swe-2"
         name: "SWE-2"
         contextWindow: 262000
-        maxTokens: 128000
+        maxTokens: 65536
         supportsImages: true
       - id: "swe-2-flash"
         name: "SWE-2 Flash"
         contextWindow: 262144
-        maxTokens: 128000
+        maxTokens: 65536
         supportsImages: false
     retryPolicy:  # 可选
       mode: normal

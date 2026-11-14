@@ -19,19 +19,19 @@
         proxy: ""
         forceHttp1: true
         defaultContextWindow: 128000
-        defaultMaxTokens: 128000
+        defaultMaxTokens: 65536
         models:
           - id: "swe-2"
             name: "SWE-2"
             description: "Devin-hosted SWE-2 coding model"
             contextWindow: 262000
-            maxTokens: 128000
+            maxTokens: 65536
             supportsImages: true
           - id: "swe-2-flash"
             name: "SWE-2 Flash"
             description: "Devin-hosted SWE-2 Flash fast coding model"
             contextWindow: 262144
-            maxTokens: 128000
+            maxTokens: 65536
             supportsImages: false
         retryPolicy:
           mode: normal

@@ -38,7 +38,7 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
     name: 'SWE-2',
     description: 'Devin-hosted SWE-2 coding model. Effort (high/medium/max) selectable via dsh reasoning slider.',
     contextWindow: 262_000,
-    maxTokens: 128_000,
+    maxTokens: 65_536,
     supportsImages: true,
     family: 'SWE-2',
     tiers: { high: 'swe-2-high', medium: 'swe-2-medium', max: 'swe-2-max' },
@@ -50,7 +50,7 @@ const DEFAULT_MODELS: DevinCatalogModel[] = [
     name: 'SWE-2 Flash',
     description: 'Devin-hosted SWE-2 Flash fast coding model. Effort (medium/high/max) selectable via dsh reasoning slider.',
     contextWindow: 262_144,
-    maxTokens: 128_000,
+    maxTokens: 65_536,
     supportsImages: false,
     family: 'SWE-2 Flash',
     isPromo: true,
@@ -81,7 +81,7 @@ export interface DevinBridgeConfig {
   forceHttp1: boolean
   /** 默认上下文窗口，默认 128000。 */
   defaultContextWindow: number
-  /** 默认最大输出 token，默认 128000。 */
+  /** 默认最大输出 token，默认 65536。 */
   defaultMaxTokens: number
   /** 可用模型列表。 */
   models: DevinCatalogModel[]
@@ -124,7 +124,7 @@ export const Config = z.object({
   proxy: z.string().default('').volatile(),
   forceHttp1: z.boolean().default(true).volatile(),
   defaultContextWindow: z.number().step(1).min(1).default(128_000).volatile(),
-  defaultMaxTokens: z.number().step(1).min(1).default(128_000).volatile(),
+  defaultMaxTokens: z.number().step(1).min(1).default(65_536).volatile(),
   models: z.array(catalogModel).default(DEFAULT_MODELS).volatile(),
   /** 设置页模型目录里被关掉的模型 id；listModels 过滤，picker 不再显示。 */
   hiddenModels: z.array(z.string()).default([]).volatile(),
@@ -178,7 +178,7 @@ export function apply(ctx: Context, config: Config): void {
     proxy: readVolatile(config.proxy) ?? '',
     forceHttp1: readVolatile(config.forceHttp1) ?? true,
     defaultContextWindow: readVolatile(config.defaultContextWindow) ?? 128_000,
-    defaultMaxTokens: readVolatile(config.defaultMaxTokens) ?? 128_000,
+    defaultMaxTokens: readVolatile(config.defaultMaxTokens) ?? 65_536,
     models: [...(readVolatile(config.models) ?? DEFAULT_MODELS)],
     hiddenModels: [...(readVolatile(config.hiddenModels) ?? [])],
     retryPolicy: readVolatile(config.retryPolicy),
