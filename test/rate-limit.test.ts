@@ -258,3 +258,25 @@ test('autoResume 默认关闭，函数形式可热更新', () => {
   flag.value = true
   assert.equal(watcher.autoResume, true)
 })
+
+test('取消周期也会中断退避等待', async () => {
+  const watcher = new RateLimitWatcher({ schedule: () => () => {} })
+  const waiting = watcher.waitBackoff(1)
+  watcher.cancel()
+  await assert.rejects(waiting, (error: Error) => error.name === 'AbortError')
+})
+
+test('容差内重复上报会按新时点重排到点计时器', () => {
+  const start = Date.UTC(2026, 10, 14, 19, 13)
+  const cycle = fakeClock(start)
+  const notices: RateLimitNotice[] = []
+  const watcher = new RateLimitWatcher({ reminderLeadMs: 0, now: cycle.now, schedule: cycle.schedule, notify: (n) => notices.push(n) })
+  watcher.report(parseRateLimitReset('[resource_exhausted] limit. reset in 2 seconds', { now: cycle.now() }))
+  cycle.advance(1_000)
+  // 同一周期内再次上报，重置点被推后 1s：计时器应重排到新时点。
+  watcher.report(parseRateLimitReset('[resource_exhausted] limit. reset in 2 seconds', { now: cycle.now() }))
+  cycle.advance(1_500)
+  assert.equal(notices.filter((n) => n.kind === 'reset').length, 0)
+  cycle.advance(600)
+  assert.equal(notices.filter((n) => n.kind === 'reset').length, 1)
+})

@@ -4,7 +4,7 @@
  * 贡献：
  * - `settings.section`：设置侧栏独立 "Devin" 页面（额度卡 + 模型目录开关 + 连接设置）；
  * - `plugins.bundle.config`：插件管理器 bundle 详情页内嵌同一面板（key = 包名）；
- * - `conversation.input.right`：选中 devin 模型时的日/周额度胶囊。
+ * - `conversation.input.right`：选中 devin 模型时的日/周额度胶囊与限流倒计时胶囊。
  *
  * 配置读写走 `ctx.configForms`；模型发现走 `ctx.remote.llm.discoverModels`；
  * 账户额度走插件自己的 `remote.devin`（Host 代理 GetUserStatus，token 不出进程）。
@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type {} from '@deepseek-ai/dsh-llm/remote'
 import { DevinBridgeCard, type DevinBridgeCardProps, type QuotaSource, type RateLimitSource } from './DevinBridgeCard.tsx'
 import { QuotaPill, type QuotaPillProps } from './QuotaPill.tsx'
+import { RateLimitPill, type RateLimitPillProps } from './RateLimitPill.tsx'
 import { mountDevinRemote, type DevinRemote } from './remote.ts'
 
 /** Settings namespace — 等于 cordis.patch.yml 里的 entry id。 */
@@ -142,6 +143,27 @@ export function apply(ctx: ClientContext): void {
           },
         },
         QuotaPill,
+      ),
+    )
+    scope.slots.inject('conversation.input.right', () =>
+      scope.slots.register(
+        {
+          name: 'conversation.input.right',
+          id: 'devin-rate-limit',
+          order: 1001,
+          inject: (sessionId: string): RateLimitPillProps => {
+            try {
+              return {
+                directory: scope.modelDirectories.directoryFor(sessionId as Parameters<typeof scope.modelDirectories.directoryFor>[0]).store,
+                status: () => devinRemote?.rateLimit() ?? unmounted(),
+              }
+            } catch {
+              // 会话还没绑定模型目录：胶囊先不渲染。
+              return { directory: undefined, status: null }
+            }
+          },
+        },
+        RateLimitPill,
       ),
     )
   })

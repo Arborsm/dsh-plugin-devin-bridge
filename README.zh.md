@@ -103,7 +103,7 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 
 开启后，撞限流且本次尝试尚未产出任何内容时，插件等到重置点再重放同一请求；重置点已过或原文没给可解析时间时按指数退避（5s 起、封顶 60s、±10% 抖动），最多 `rateLimitMaxResumeAttempts` 次。已经产出文本/推理/工具调用则不重放，只登记提醒并原样上报限流错误，避免把两段回答拼进同一条消息。
 
-手动控制：`remote.devin.cancelRateLimit()` 取消挂起的提醒与等待；`remote.devin.disableRateLimitAutoResume()` 关闭自动继续；`remote.devin.rateLimit()` 读取当前状态（`active`/`resetAtUtc`/`resetAtLocal`/`remainingMs`）。
+手动控制：`remote.devin.cancelRateLimit()` 取消挂起的提醒与等待；`remote.devin.disableRateLimitAutoResume()` 关闭自动继续；`remote.devin.rateLimit()` 读取当前状态（`active`/`resetAtUtc`/`resetAtLocal`/`remainingMs`）。watcher 同一时刻只跟踪一个限流周期：重置点相差超过 60 秒容差的新上报会取代挂起中的等待。
 
 ### 验证提醒
 

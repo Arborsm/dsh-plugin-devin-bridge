@@ -15,6 +15,9 @@ export async function postRateLimitNotice(
   proxy?: string,
 ): Promise<void> {
   const target = new URL(url)
+  if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+    throw new Error(`rate-limit webhook must be an http(s) URL, got "${target.protocol}"`)
+  }
   const isHttps = target.protocol === 'https:'
   const agent = createProxyAgent(proxy, url)
   const body = Buffer.from(JSON.stringify({

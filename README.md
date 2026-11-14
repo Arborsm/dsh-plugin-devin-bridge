@@ -103,7 +103,7 @@ The plugin parses both the **relative duration** (1 hour 48 minutes) and the **a
 
 Once enabled, an attempt that is rate-limited before emitting any chunk waits for the reset instant and replays the same request. If the instant already passed (or upstream gave no parseable time) it backs off exponentially (5s initial, 60s cap, ±10% jitter) up to `rateLimitMaxResumeAttempts` times. Attempts that already emitted text, reasoning, or tool calls are never replayed — the reminder is recorded and the rate-limit error is rethrown unchanged, so two answers never merge into one message.
 
-Manual control: `remote.devin.cancelRateLimit()` cancels a pending reminder/wait, `remote.devin.disableRateLimitAutoResume()` turns auto-resume off, and `remote.devin.rateLimit()` returns the current state (`active`/`resetAtUtc`/`resetAtLocal`/`remainingMs`).
+Manual control: `remote.devin.cancelRateLimit()` cancels a pending reminder/wait, `remote.devin.disableRateLimitAutoResume()` turns auto-resume off, and `remote.devin.rateLimit()` returns the current state (`active`/`resetAtUtc`/`resetAtLocal`/`remainingMs`). The watcher tracks a single limit cycle at a time: a report whose reset instant differs by more than the 60s dedup window supersedes pending waits.
 
 ### Verifying the reminder
 

@@ -135,6 +135,7 @@ declare class RateLimitWatcher {
   private readonly backoff;
   private readonly options;
   private cycle;
+  private readonly pendingWaits;
   private lastNotice;
   private lastNoticeAt;
   private attempts;
@@ -169,6 +170,8 @@ declare class RateLimitWatcher {
    * 不会重复发同一条通知。
    */
   report(limit: RateLimitReset): void;
+  /** 按 cycle.limit 排预告与到点计时器；已到点则立即通知并唤醒等待者。 */
+  private armTimers;
   /**
    * 等到重置点。已过点立即返回；signal 取消时以 AbortError 拒绝。
    * @param limit - 本次限流信息。

@@ -66,8 +66,10 @@ export function rateLimitStream(
       try {
         if (limit.resetAt > watcher.now()) await watcher.waitUntilReset(limit, signal, attempt)
         else await watcher.waitBackoff(attempt, signal)
-      } catch {
-        // 用户取消或周期被取消：把原始限流失败原样上报。
+      } catch (error) {
+        // 调用方自己的取消信号：透传 AbortError，不伪装成限流失败；
+        // 周期被取消（cancelRateLimit/新周期/插件卸载）才回退为原始限流失败。
+        if (signal?.aborted) throw error
         throw rateLimitError(limit.message)
       }
       log?.('info', `devin-bridge: 限流窗口已重置，即将进行第 ${attempt + 1}/${maxAttempts} 次尝试`)

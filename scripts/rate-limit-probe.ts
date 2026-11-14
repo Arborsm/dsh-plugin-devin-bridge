@@ -15,7 +15,7 @@ const DEFAULT_MESSAGE =
 const args = process.argv.slice(2)
 const atIndex = args.indexOf('--at')
 const fixedNow = atIndex >= 0 ? Date.parse(args[atIndex + 1]!) : Number.NaN
-const message = args.filter((arg, i) => arg !== '--at' && i !== atIndex + 1).join(' ').trim() || DEFAULT_MESSAGE
+const message = args.filter((arg, i) => arg !== '--at' && !(atIndex >= 0 && i === atIndex + 1)).join(' ').trim() || DEFAULT_MESSAGE
 const now = Number.isFinite(fixedNow) ? fixedNow : Date.now()
 
 const parsed = parseRateLimitReset(message, { now })

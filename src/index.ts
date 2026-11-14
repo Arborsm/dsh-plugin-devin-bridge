@@ -246,9 +246,15 @@ export function apply(ctx: Context, config: Config): void {
     },
   })
   // volatile 配置更新：提醒提前量与自动继续上限随最新快照重建 watcher。
+  // 手动 override 只在自动继续的配置值本身变化时复位：
+  // 无关 volatile 更新（token、模型目录等）不应静默关掉它。
+  let lastAutoResumeConfig = source().rateLimitAutoResume
   ctx.on('loader/volatile-update', () => {
     const c = source()
-    autoResumeOverride = undefined
+    if (c.rateLimitAutoResume !== lastAutoResumeConfig) {
+      lastAutoResumeConfig = c.rateLimitAutoResume
+      autoResumeOverride = undefined
+    }
     watcher.configure({
       reminderLeadMs: c.rateLimitReminderLeadMinutes * 60_000,
       maxResumeAttempts: c.rateLimitMaxResumeAttempts,

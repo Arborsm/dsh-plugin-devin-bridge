@@ -88,6 +88,13 @@ interface Cycle {
   limit: RateLimitReset
   waiters: Waiter[]
   cancelTimers: Array<() => void>
+  /** 预告通知是否已发出（重复上报重排计时器时不重发）。 */
+  reminded: boolean
+}
+
+/** 退避等待句柄：不挂在 cycle 上，由 disposeCycle 统一取消。 */
+interface PendingWait {
+  cancel: () => void
 }
 
 /** 到点提醒 + 到点自动继续的运行时。 */
@@ -97,6 +104,7 @@ export class RateLimitWatcher {
   private readonly backoff: BackoffPlan
   private readonly options: RateLimitWatchOptions
   private cycle: Cycle | null = null
+  private readonly pendingWaits = new Set<PendingWait>()
   private lastNotice: 'reminder' | 'reset' | undefined
   private lastNoticeAt: number | undefined
   private attempts = 0
@@ -144,15 +152,27 @@ export class RateLimitWatcher {
    */
   waitBackoff(attempt: number, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return Promise.reject(abortError())
+    this.attempts = attempt
     return new Promise<void>((resolve, reject) => {
-      const onAbort = (): void => {
-        cancel()
-        reject(abortError())
-      }
-      const cancel = this.scheduleFn()(() => {
-        signal?.removeEventListener('abort', onAbort)
-        resolve()
+      const cancelTimer = this.scheduleFn()(() => {
+        finish(() => resolve())
       }, this.retryDelay(attempt))
+      const finish = (done: () => void): void => {
+        signal?.removeEventListener('abort', onAbort)
+        this.pendingWaits.delete(entry)
+        done()
+      }
+      const onAbort = (): void => {
+        cancelTimer()
+        finish(() => reject(abortError()))
+      }
+      const entry: PendingWait = {
+        cancel: () => {
+          cancelTimer()
+          finish(() => reject(abortError()))
+        },
+      }
+      this.pendingWaits.add(entry)
       signal?.addEventListener('abort', onAbort, { once: true })
     })
   }
@@ -183,7 +203,6 @@ export class RateLimitWatcher {
     return {
       ...base,
       active: remainingMs > 0,
-      reminderEnabled: this.reminderEnabled,
       code: this.cycle.limit.code,
       message: this.cycle.limit.message,
       resetAt: this.cycle.limit.resetAt,
@@ -198,28 +217,44 @@ export class RateLimitWatcher {
    * 不会重复发同一条通知。
    */
   report(limit: RateLimitReset): void {
-    // 同一重置时刻重复上报（多会话、或多层监听同时撞限流）只复用已有周期，
-    // 不打断已经在等的调用方。相对时长换算出的毫秒可能相差几毫秒，
-    // 因此给 60 秒容差。
+    // 同一重置时刻的重复上报（多会话、或多层监听同时撞限流）复用同一周期：
+    // 更新数据并按新重置点重排计时器；通知由计时器发出，不会重复。
+    // 相对时长换算出的毫秒可能相差几毫秒，因此给 60 秒容差。
+    // 注意：watcher 只跟踪一个周期——重置点相距超过容差的上报会中止
+    // 旧周期的等待者（多会话并发限流时以最新上报为准）。
     if (this.cycle && Math.abs(this.cycle.limit.resetAt - limit.resetAt) <= 60_000) {
       this.cycle.limit = limit
+      this.armTimers(this.cycle)
       return
     }
     this.disposeCycle()
-    const cycle: Cycle = { limit, waiters: [], cancelTimers: [] }
+    const cycle: Cycle = { limit, waiters: [], cancelTimers: [], reminded: false }
     this.cycle = cycle
-    const remaining = limit.resetAt - this.clock()
+    this.armTimers(cycle)
+  }
+
+  /** 按 cycle.limit 排预告与到点计时器；已到点则立即通知并唤醒等待者。 */
+  private armTimers(cycle: Cycle): void {
+    for (const cancel of cycle.cancelTimers) cancel()
+    cycle.cancelTimers.length = 0
+    const remaining = cycle.limit.resetAt - this.clock()
     if (remaining <= 0) {
-      this.emit(limit, 'reset')
+      this.emit(cycle.limit, 'reset')
+      this.settle(cycle, null)
+      if (this.cycle === cycle) this.cycle = null
       return
     }
     const lead = Math.min(this.leadMs, remaining)
-    if (lead > 0 && lead < remaining) {
-      cycle.cancelTimers.push(this.scheduleFn()(() => this.emit(limit, 'reminder'), remaining - lead))
+    if (!cycle.reminded && lead > 0 && lead < remaining) {
+      cycle.cancelTimers.push(this.scheduleFn()(() => {
+        cycle.reminded = true
+        this.emit(cycle.limit, 'reminder')
+      }, remaining - lead))
     }
     cycle.cancelTimers.push(this.scheduleFn()(() => {
-      this.emit(limit, 'reset')
+      this.emit(cycle.limit, 'reset')
       this.settle(cycle, null)
+      this.attempts = 0
       if (this.cycle === cycle) this.cycle = null
     }, remaining))
   }
@@ -254,7 +289,6 @@ export class RateLimitWatcher {
   /** 取消当前周期：关闭自动继续或插件卸载时调用。 */
   cancel(): void {
     this.disposeCycle()
-    this.attempts = 0
   }
 
   /** 一条可直接展示给用户的提醒文案（错误码 + 重置时间 + 可重跑）。 */
@@ -281,6 +315,9 @@ export class RateLimitWatcher {
   }
 
   private disposeCycle(): void {
+    // 退避等待不挂在 cycle 上：单独清掉，保证 cancel()/新周期/插件卸载都能中断它。
+    for (const pending of [...this.pendingWaits]) pending.cancel()
+    this.attempts = 0
     if (!this.cycle) return
     for (const cancel of this.cycle.cancelTimers) cancel()
     this.settle(this.cycle, abortError())

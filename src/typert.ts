@@ -64,6 +64,7 @@ const rateLimitStatusCodec = codec('DevinRateLimitStatus', (value) => {
   const result: Record<string, unknown> = {
     active: record.active === true,
     autoResume: record.autoResume === true,
+    reminderEnabled: record.reminderEnabled !== false,
     maxResumeAttempts: typeof record.maxResumeAttempts === 'number' ? record.maxResumeAttempts : 0,
     resumeAttempts: typeof record.resumeAttempts === 'number' ? record.resumeAttempts : 0,
   }
