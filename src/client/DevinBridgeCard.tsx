@@ -1,17 +1,20 @@
 /**
  * Devin Bridge 设置面板（settings.section 独立页 + plugins.bundle.config 内嵌）。
  *
- * 布局对齐 dsh-devin2api 的面板：
+ * 布局按「状态 → 模型 → 配置」三段：
  * - 顶栏：连接状态点 + 端点 + 刷新按钮
  * - 「额度」卡：套餐名、日/周剩余百分比进度条、重置时间（remote.devin）
+ * - 「限流状态」卡：挂起中的限流周期、重置时间与运行期操作（remote.devin）
  * - 「模型目录」卡：搜索 + 全开/全关 + 每模型开关（写 hiddenModels）
  * - 「连接设置」卡：token / baseUrl / proxy / forceHttp1
+ * - 「限流提醒」卡：到点提醒、自动继续、提前量、Webhook 等持久配置
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
-import type { DevinQuotaPayload } from './remote.ts'
+import type { DevinQuotaPayload, DevinRateLimitStatus } from './remote.ts'
+import { describeMs } from './format.ts'
 
 /** 插件配置类型。 */
 export interface DevinBridgeConfig {
@@ -22,6 +25,16 @@ export interface DevinBridgeConfig {
   defaultContextWindow: number
   defaultMaxTokens: number
   hiddenModels: string[]
+  /** 限流到点提醒开关。 */
+  rateLimitReminder?: boolean
+  /** 提前多少分钟提醒；0 = 只在重置到点提醒。 */
+  rateLimitReminderLeadMinutes?: number
+  /** 重置到点后自动继续被中断的轮次。 */
+  rateLimitAutoResume?: boolean
+  /** 自动继续最大尝试次数。 */
+  rateLimitMaxResumeAttempts?: number
+  /** 可选 webhook：POST 一条 JSON 通知。 */
+  rateLimitNotifyUrl?: string
   models: Array<{
     id: string
     name?: string
@@ -60,6 +73,14 @@ export interface QuotaSource {
   refreshQuota(): Promise<RemoteResult<DevinQuotaPayload>>
 }
 
+/** 限流状态与开关；remote.devin.rateLimit 系列。 */
+export interface RateLimitSource {
+  rateLimit(): Promise<RemoteResult<DevinRateLimitStatus>>
+  cancelRateLimit(): Promise<RemoteResult<DevinRateLimitStatus>>
+  enableRateLimitAutoResume(): Promise<RemoteResult<DevinRateLimitStatus>>
+  disableRateLimitAutoResume(): Promise<RemoteResult<DevinRateLimitStatus>>
+}
+
 export interface DevinBridgeCardProps {
   /** 插件管理器传入的视图模式；bundle 配置页固定 'page'。 */
   view?: 'summary' | 'page'
@@ -70,6 +91,8 @@ export interface DevinBridgeCardProps {
   discover: () => Promise<RemoteResult<DiscoveredModel[]>>
   /** remote.devin 命名空间；未挂载时为 null（额度卡显示占位）。 */
   remote?: QuotaSource | null
+  /** 限流状态源；未挂载时为 null（限流卡显示占位）。 */
+  rateLimit?: RateLimitSource | null
 }
 
 const REFRESH_MS = 60_000
@@ -350,10 +373,207 @@ function TextRow(props: Parameters<typeof FieldRow>[0]): ReactNode {
   )
 }
 
+
+/** 与 useQuota 同类：每 15s 拉一次限流状态，期间可手动刷新；reachable=false 表示 remote 未挂载或拉取失败。 */
+function useRateLimit(source: RateLimitSource | null | undefined): [DevinRateLimitStatus | null, boolean, () => void] {
+  const [state, setState] = useState<DevinRateLimitStatus | null>(null)
+  const [reachable, setReachable] = useState(true)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+  const load = useCallback(async () => {
+    if (!source) {
+      setState(null)
+      setReachable(false)
+      return
+    }
+    try {
+      const result = await source.rateLimit()
+      if (alive.current) {
+        setReachable(result.ok)
+        setState(result.ok ? result.value : null)
+      }
+    } catch {
+      if (alive.current) {
+        setState(null)
+        setReachable(false)
+      }
+    }
+  }, [source])
+  useEffect(() => {
+    void load()
+    const timer = setInterval(() => void load(), 15_000)
+    return () => clearInterval(timer)
+  }, [load])
+  return [state, reachable, useCallback(() => void load(), [load])]
+}
+
+/** 限流运行状态卡：挂起时显示重置时间与操作按钮；平时只留一行状态。 */
+function RateLimitStatusCard(props: {
+  status: DevinRateLimitStatus | null
+  reachable: boolean
+  source: RateLimitSource | null | undefined
+  onRefresh: () => void
+  onError: (message: string) => void
+}): ReactNode {
+  const { status, reachable, source, onRefresh, onError } = props
+  const [busy, setBusy] = useState<'idle' | 'enable' | 'disable' | 'cancel'>('idle')
+  const run = async (kind: 'enable' | 'disable' | 'cancel', call: () => Promise<RemoteResult<DevinRateLimitStatus>>): Promise<void> => {
+    setBusy(kind)
+    try {
+      const result = await call()
+      if (!result.ok) onError(result.error?.message ?? '操作被 Host 拒绝。')
+      onRefresh()
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy('idle')
+    }
+  }
+
+  return (
+    <Card title="限流状态">
+      <Row
+        label="当前状态"
+        value={
+          !reachable
+            ? '限流服务未挂载'
+            : status?.active
+              ? `[${status.code ?? 'resource_exhausted'}] 等待重置 · 还剩 ${describeMs(status.remainingMs ?? 0)}`
+              : '无挂起的限流'
+        }
+        tone={status?.active ? 'var(--dsw-alias-state-warn-primary, #f5a524)' : undefined}
+      />
+      {status?.active && status.resetAtUtc ? <Row label="重置时间 (UTC)" value={status.resetAtUtc} /> : null}
+      {status?.active && status.resetAtLocal ? <Row label="重置时间 (本地)" value={status.resetAtLocal} /> : null}
+      {status?.active && status.message ? <p className="dbp-hint">{status.message}</p> : null}
+      {status ? (
+        <Row label="到点提醒" value={status.reminderEnabled === false ? '已关闭' : '已开启'} />
+      ) : null}
+      {status?.active ? (
+        <Row
+          label="自动继续"
+          value={
+            status.autoResume
+              ? `已开启 · 已重试 ${status.resumeAttempts ?? 0}/${status.maxResumeAttempts ?? 0} 次`
+              : '已关闭'
+          }
+        />
+      ) : null}
+      {status?.active ? (
+        <div className="dbp-toolbar">
+          {status.autoResume ? (
+            <button
+              type="button"
+              className="dbp-btn"
+              disabled={busy !== 'idle' || source == null}
+              onClick={() => void run('disable', () => source!.disableRateLimitAutoResume())}
+            >
+              {busy === 'disable' ? '处理中…' : '关闭自动继续'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="dbp-btn"
+              disabled={busy !== 'idle' || source == null}
+              onClick={() => void run('enable', () => source!.enableRateLimitAutoResume())}
+            >
+              {busy === 'enable' ? '处理中…' : '开启自动继续'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="dbp-btn"
+            disabled={busy !== 'idle' || source == null}
+            onClick={() => void run('cancel', () => source!.cancelRateLimit())}
+          >
+            {busy === 'cancel' ? '处理中…' : '取消提醒'}
+          </button>
+        </div>
+      ) : null}
+      {status?.active && !status.autoResume ? (
+        <p className="dbp-hint">开启自动继续后对之后撞限流的请求生效；本次已中断的回复需要重新发送。</p>
+      ) : null}
+    </Card>
+  )
+}
+
+/** 限流提醒设置卡：到点提醒、自动继续、提前量、Webhook 等持久配置。 */
+function RateLimitSettingsCard(props: {
+  reminder: boolean
+  autoResumeConfig: boolean
+  leadMinutes: number
+  maxAttempts: number
+  notifyUrl: string
+  disabled: boolean
+  onSave: (field: string, value: unknown) => void
+}): ReactNode {
+  const { reminder, autoResumeConfig, leadMinutes, maxAttempts, notifyUrl, disabled, onSave } = props
+  return (
+    <Card title="限流提醒">
+      <p className="dbp-hint">
+        免费模型触发限流时，解析报错里的重置时间（相对时长 + UTC 钟点），换算成本地时间后提醒；可选在重置到点后自动继续。
+      </p>
+      <label className="dbp-field">
+        <span className="dbp-field-head">
+          <span className="dbp-field-label">到点提醒</span>
+          <Toggle
+            checked={reminder !== false}
+            disabled={disabled}
+            label="限流到点提醒"
+            onChange={(next) => onSave('rateLimitReminder', next)}
+          />
+        </span>
+        <span className="dbp-field-hint">关闭后不再发通知，但仍会在设置页显示重置时间。</span>
+      </label>
+      <label className="dbp-field">
+        <span className="dbp-field-head">
+          <span className="dbp-field-label">自动继续</span>
+          <Toggle
+            checked={autoResumeConfig === true}
+            disabled={disabled}
+            label="限流重置后自动继续"
+            onChange={(next) => onSave('rateLimitAutoResume', next)}
+          />
+        </span>
+        <span className="dbp-field-hint">写入配置、对之后所有撞限流的请求生效；上方状态卡的按钮只对当前运行生效。</span>
+      </label>
+      <FieldRow
+        label="提前提醒（分钟）"
+        hint="0 表示只在重置到点发一次；默认提前 5 分钟。"
+        type="number"
+        value={leadMinutes}
+        disabled={disabled}
+        onSave={(v) => onSave('rateLimitReminderLeadMinutes', v)}
+      />
+      <FieldRow
+        label="自动继续次数上限"
+        hint="重置到点后按指数退避重试，超过上限即放弃；默认 3。"
+        type="number"
+        value={maxAttempts}
+        disabled={disabled}
+        onSave={(v) => onSave('rateLimitMaxResumeAttempts', v)}
+      />
+      <FieldRow
+        label="通知 Webhook"
+        hint="可选：POST 一条 JSON（kind/code/message/resetAtUtc/resetAtLocal）。留空只写 Host 日志。"
+        placeholder="https://example.com/devin-rate-limit"
+        value={notifyUrl}
+        disabled={disabled}
+        onSave={(v) => onSave('rateLimitNotifyUrl', v)}
+      />
+    </Card>
+  )
+}
+
 /**
  * Devin Bridge 面板主体。
  */
-export function DevinBridgeCard({ form, discover, remote, embedded = true }: DevinBridgeCardProps): ReactNode {
+export function DevinBridgeCard({ form, discover, remote, rateLimit, embedded = true }: DevinBridgeCardProps): ReactNode {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
     () => form.getSnapshot(),
@@ -366,6 +586,7 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [quota, refreshQuota] = useQuota(remote)
+  const [limit, limitReachable, refreshLimit] = useRateLimit(rateLimit)
 
   const value = snapshot.value
   const disabled = !snapshot.writable || saving
@@ -503,6 +724,15 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
         )}
       </Card>
 
+      {/* 限流状态卡 */}
+      <RateLimitStatusCard
+        status={limit}
+        reachable={limitReachable}
+        source={rateLimit}
+        onRefresh={refreshLimit}
+        onError={setError}
+      />
+
       {/* 模型目录卡 */}
       <ModelCatalog
         models={value?.models ?? []}
@@ -550,6 +780,17 @@ export function DevinBridgeCard({ form, discover, remote, embedded = true }: Dev
           onSave={(v) => void save('forceHttp1', v)}
         />
       </Card>
+
+      {/* 限流提醒设置卡 */}
+      <RateLimitSettingsCard
+        reminder={value?.rateLimitReminder !== false}
+        autoResumeConfig={value?.rateLimitAutoResume === true}
+        leadMinutes={value?.rateLimitReminderLeadMinutes ?? 5}
+        maxAttempts={value?.rateLimitMaxResumeAttempts ?? 3}
+        notifyUrl={value?.rateLimitNotifyUrl ?? ''}
+        disabled={disabled}
+        onSave={(field, next) => void save(field, next)}
+      />
 
       {error ? <p className="dbp-error">{error}</p> : null}
       <p className="dbp-hint">

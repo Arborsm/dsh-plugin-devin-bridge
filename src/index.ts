@@ -21,6 +21,9 @@ import type { ImageAttachmentRef, StoredImageAttachment } from '@deepseek-ai/dsh
 import { DevinAdapter, type DevinAdapterOptions, type DevinCatalogModel, type DevinConnectionOptions } from './adapter/devin.ts'
 import { fetchQuota, type DevinQuota } from './adapter/quota.ts'
 import { readDevinSession, DEFAULT_API_SERVER_URL } from './adapter/credentials.ts'
+import { RateLimitWatcher, type RateLimitStatus } from './adapter/rate-limit-watch.ts'
+import { postRateLimitNotice } from './adapter/rate-limit-notify.ts'
+import { rateLimitStream } from './adapter/rate-limit-observe.ts'
 
 export const name = 'dsh-plugin-devin-bridge'
 export const inject = ['llm']
@@ -86,6 +89,16 @@ export interface DevinBridgeConfig {
   hiddenModels: string[]
   /** 重试策略；未配置时走 dsh 默认 normal 策略。 */
   retryPolicy?: RetryPolicyConfig
+  /** 免费模型限流到点时发提醒；默认开启。 */
+  rateLimitReminder: boolean
+  /** 提前多少分钟发提醒；0 表示只在重置到点发。默认 5。 */
+  rateLimitReminderLeadMinutes: number
+  /** 重置到点后自动继续被中断的轮次；默认关闭。 */
+  rateLimitAutoResume: boolean
+  /** 自动继续的最大尝试次数（含首轮）；默认 3。 */
+  rateLimitMaxResumeAttempts: number
+  /** 可选 webhook：POST 一条 JSON 通知，空串表示只用 Host 日志。 */
+  rateLimitNotifyUrl: string
 }
 
 const catalogModel = z.object({
@@ -116,6 +129,16 @@ export const Config = z.object({
   /** 设置页模型目录里被关掉的模型 id；listModels 过滤，picker 不再显示。 */
   hiddenModels: z.array(z.string()).default([]).volatile(),
   retryPolicy: RetryPolicySchema.volatile(),
+  /** 免费模型限流到点提醒（Host 日志 + 可选 webhook），默认开启。 */
+  rateLimitReminder: z.boolean().default(true).volatile(),
+  /** 提前多少分钟提醒；0 = 只在重置到点提醒一次。 */
+  rateLimitReminderLeadMinutes: z.number().step(1).min(0).max(24 * 60).default(5).volatile(),
+  /** 重置到点后自动继续被中断的轮次；默认关闭。 */
+  rateLimitAutoResume: z.boolean().default(false).volatile(),
+  /** 自动继续最大尝试次数（含首轮）。 */
+  rateLimitMaxResumeAttempts: z.number().step(1).min(1).max(10).default(3).volatile(),
+  /** 可选 webhook URL：POST JSON 通知；留空只用日志。 */
+  rateLimitNotifyUrl: z.string().default('').volatile(),
 })
 
 /** Loader 传入的 config：volatile 字段是稳定引用而非裸值。 */
@@ -159,6 +182,11 @@ export function apply(ctx: Context, config: Config): void {
     models: [...(readVolatile(config.models) ?? DEFAULT_MODELS)],
     hiddenModels: [...(readVolatile(config.hiddenModels) ?? [])],
     retryPolicy: readVolatile(config.retryPolicy),
+    rateLimitReminder: readVolatile(config.rateLimitReminder) ?? true,
+    rateLimitReminderLeadMinutes: readVolatile(config.rateLimitReminderLeadMinutes) ?? 5,
+    rateLimitAutoResume: readVolatile(config.rateLimitAutoResume) ?? false,
+    rateLimitMaxResumeAttempts: readVolatile(config.rateLimitMaxResumeAttempts) ?? 3,
+    rateLimitNotifyUrl: readVolatile(config.rateLimitNotifyUrl) ?? '',
   })
 
   // attachment store（用于读取图片）— 在插件加载时获取一次
@@ -194,8 +222,57 @@ export function apply(ctx: Context, config: Config): void {
     return conn
   }
 
+  // 限流到点提醒 + 可选自动继续：volatile 配置每次读取时求值，
+  // 用户在设置页开关后立即生效，无需重载插件。
+  // 运行时可手动覆盖配置里的自动继续开关（remote.devin.enable/disableRateLimitAutoResume）。
+  let autoResumeOverride: boolean | undefined
+  const watcher = new RateLimitWatcher({
+    reminderLeadMs: source().rateLimitReminderLeadMinutes * 60_000,
+    enabled: () => source().rateLimitReminder,
+    autoResume: () => autoResumeOverride ?? source().rateLimitAutoResume,
+    maxResumeAttempts: source().rateLimitMaxResumeAttempts,
+    log: (level, message) => {
+      if (level === 'error') ctx.logger.error(message)
+      else if (level === 'warn') ctx.logger.warn(message)
+      else ctx.logger.info(message)
+    },
+    notify: (notice) => {
+      const c = source()
+      if (!c.rateLimitReminder) return
+      if (!c.rateLimitNotifyUrl) return
+      void postRateLimitNotice(c.rateLimitNotifyUrl, notice, c.proxy || undefined).catch((error) => {
+        ctx.logger.warn(`devin-bridge: 限流 webhook 发送失败：${error instanceof Error ? error.message : String(error)}`)
+      })
+    },
+  })
+  // volatile 配置更新：提醒提前量与自动继续上限随最新快照重建 watcher。
+  // 手动 override 只在自动继续的配置值本身变化时复位：
+  // 无关 volatile 更新（token、模型目录等）不应静默关掉它。
+  let lastAutoResumeConfig = source().rateLimitAutoResume
+  ctx.on('loader/volatile-update', () => {
+    const c = source()
+    if (c.rateLimitAutoResume !== lastAutoResumeConfig) {
+      lastAutoResumeConfig = c.rateLimitAutoResume
+      autoResumeOverride = undefined
+    }
+    watcher.configure({
+      reminderLeadMs: c.rateLimitReminderLeadMinutes * 60_000,
+      maxResumeAttempts: c.rateLimitMaxResumeAttempts,
+    })
+  })
+  // 兜底观察：任何经 dsh-llm 路由的模型（不只 devin）撞限流时也登记提醒。
+  // adapter 自己也会 report，重复上报由 watcher 的容差去重。
+  ctx.effect(() =>
+    ctx.on('llm/stream', (options, next) =>
+      rateLimitStream(next, watcher, (level, message) => ctx.logger[level](message), options.signal),
+    ),
+  )
+  // 插件卸载时清掉挂着的提醒计时器。
+  ctx.effect(() => () => watcher.cancel())
+
   // DevinAdapter 持有连接配置 thunk，每次操作时读取最新快照
   const adapter = new DevinAdapter({
+    rateLimit: watcher,
     options: (): DevinConnectionOptions => {
       const c = source()
       const { token, baseUrl } = resolveConn()
@@ -258,6 +335,24 @@ export function apply(ctx: Context, config: Config): void {
     refreshQuota: (): Promise<DevinQuota> => fetchWithConn(true),
     // 完整目录（family 合并 + tiers 档位表）；比 remote.llm.discoverModels 信息全。
     catalog: (): Promise<DevinCatalogModel[]> => adapter.catalog(),
+    /** 当前限流周期状态：错误码、重置时刻（UTC + 本地）、是否自动继续。 */
+    rateLimit: (): RateLimitStatus => watcher.status(),
+    /** 手动取消挂着的提醒 / 自动继续。 */
+    cancelRateLimit: (): RateLimitStatus => {
+      watcher.cancel()
+      return watcher.status()
+    },
+    /** 打开自动继续（不改持久配置，只影响当前运行时）。 */
+    enableRateLimitAutoResume: (): RateLimitStatus => {
+      autoResumeOverride = true
+      return watcher.status()
+    },
+    /** 关闭自动继续并取消挂着的等待。 */
+    disableRateLimitAutoResume: (): RateLimitStatus => {
+      autoResumeOverride = false
+      watcher.cancel()
+      return watcher.status()
+    },
   }
   Object.defineProperty(service, 'typertRemote', {
     configurable: false,
@@ -273,4 +368,24 @@ export function apply(ctx: Context, config: Config): void {
 export { DevinAdapter } from './adapter/devin.ts'
 export type { DevinCatalogModel, DevinAdapterOptions, DevinConnectionOptions } from './adapter/devin.ts'
 export { fetchQuota, type DevinQuota } from './adapter/quota.ts'
+export {
+  parseRateLimitReset,
+  formatResetLocal,
+  formatResetUtc,
+  describeWait,
+  backoffDelay,
+  originalMessage,
+  extractErrorCode,
+  parseAbsoluteUtcMs,
+  parseRelativeMs,
+  RATE_LIMIT_MESSAGE,
+  DEFAULT_RESET_MS,
+  type RateLimitReset,
+} from './adapter/rate-limit.ts'
+export {
+  RateLimitWatcher,
+  type RateLimitNotice,
+  type RateLimitStatus,
+  type RateLimitWatchOptions,
+} from './adapter/rate-limit-watch.ts'
 export { readDevinSession, devinCredentialsPath, type DevinSession } from './adapter/credentials.ts'

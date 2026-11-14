@@ -65,11 +65,54 @@ All fields are optional — the plugin works out of the box once a token is avai
         initialDelayMs: 500
         maxDelayMs: 10000
         jitterRatio: 0.1
+    rateLimitReminder: true  # optional: reset reminder (on by default)
+    rateLimitReminderLeadMinutes: 5  # optional: lead time in minutes; 0 = only at reset
+    rateLimitAutoResume: false  # optional: resume after the reset instant (off by default)
+    rateLimitMaxResumeAttempts: 3  # optional: cap on automatic resume attempts
+    rateLimitNotifyUrl: ""  # optional: webhook POSTing a JSON notice; empty = Host log only
 ```
 
 When the dsh settings service is available, all of the above can be adjusted at runtime in the **Devin Bridge** card on the plugin's detail page (Plugins → dsh-plugin-devin-bridge) — every field is `volatile`, so writes land on the running plugin without a remount. The `token` field is marked `role('secret')` so it is automatically redacted in settings descriptors returned to wire surfaces.
 
 The plugin's settings namespace equals its composition entry id (`devin-bridge` in `cordis.patch.yml`); if you compose the plugin under a different entry id, that id becomes the namespace.
+
+## Rate-limit reminder and auto-resume
+
+When a free model hits its limit, upstream returns:
+
+```text
+[resource_exhausted] Reached free model rate limit. Upgrade to Max for higher limits, or switch to a different model. Your limit will reset in 1 hour 48 minutes (at 21:01 UTC).
+```
+
+The plugin parses both the **relative duration** (1 hour 48 minutes) and the **absolute clock** (21:01 UTC), preferring the clock (three same-day candidates, disambiguated by the duration), then renders the reset instant in local time:
+
+| Field | Example |
+| --- | --- |
+| Failure code | `resource_exhausted` |
+| Original text | Preserved verbatim |
+| Reset (UTC) | `2026-11-14 21:01:00 UTC` |
+| Reset (local) | `2026-11-15 05:01:00 UTC+8` (Asia/Shanghai) |
+
+**Reminder**: by default one heads-up 5 minutes before the reset and one "you can run again" notice at the reset instant, carrying the failure code, both reset times, and the original text. Channels degrade gracefully: Host log (default) → optional webhook; the settings "限流提醒" card shows the failure code, both reset times, and the remaining wait. Set `rateLimitReminder: false` to mute notifications (the reset time still shows in settings).
+
+**Auto-resume** (off by default, three ways to enable):
+
+1. Settings → Devin → the "限流提醒" card → "开启自动继续" while a limit is pending;
+2. `rateLimitAutoResume: true` in config;
+3. Programmatically via `remote.devin.enableRateLimitAutoResume()`.
+
+Once enabled, an attempt that is rate-limited before emitting any chunk waits for the reset instant and replays the same request. If the instant already passed (or upstream gave no parseable time) it backs off exponentially (5s initial, 60s cap, ±10% jitter) up to `rateLimitMaxResumeAttempts` times. Attempts that already emitted text, reasoning, or tool calls are never replayed — the reminder is recorded and the rate-limit error is rethrown unchanged, so two answers never merge into one message.
+
+Manual control: `remote.devin.cancelRateLimit()` cancels a pending reminder/wait, `remote.devin.disableRateLimitAutoResume()` turns auto-resume off, and `remote.devin.rateLimit()` returns the current state (`active`/`resetAtUtc`/`resetAtLocal`/`remainingMs`). The watcher tracks a single limit cycle at a time: a report whose reset instant differs by more than the 60s dedup window supersedes pending waits.
+
+### Verifying the reminder
+
+```bash
+# Reproduce this failure with a fixed clock: 19:13 UTC, reset "in 1h48m (at 21:01 UTC)"
+node scripts/rate-limit-probe.ts --at 2026-11-14T19:13:00Z
+```
+
+The output prints the reset instant in UTC and local time (2026-11-15 05:01:00 UTC+8 for Asia/Shanghai) plus the local times of the heads-up and reset notices. Actual firing is covered by the fake-clock case "到点前发预告、到点发「可以重新运行」提醒" in `test/rate-limit.test.ts`.
 
 ## Usage
 
@@ -84,7 +127,7 @@ Once configured, dsh's model selector will show `Devin` as a provider with avail
 - **Tool calls**: Devin tool-call deltas translated to dsh's `tool-call` blocks; tool schemas are stripped of natural-language annotations and the true descriptions are injected into the system prompt (upstream treats the wire `description` field as a routing hint).
 - **Image support**: Vision-capable models accept image inputs via dsh's attachment system. Following the upstream contract, images are attached only to the current turn (after the last assistant message); historical images degrade to text placeholders.
 - **Token usage**: Input/output/cache token accounting reported to dsh
-- **Retry policy**: Provider-owned `retryPolicy` config resolved through dsh's `resolveRetryPolicy` (normal/always modes)
+- **Rate-limit reminder and auto-resume**: Parses the relative duration and UTC clock out of `[resource_exhausted]` failures, converts them to local time for a reset reminder, and can optionally resume after the reset instant with bounded backoff (off by default; can be toggled and cancelled)
 - **System prompt sanitization**: Identity-agnostic system prompt rewriting for cross-model compatibility
 - **Proxy support**: Optional outbound HTTP/HTTPS/SOCKS5 proxy
 - **Volatile settings**: Runtime-adjustable configuration via the Plugins settings page; writes apply live
@@ -99,6 +142,10 @@ src/
 ├── adapter/
 │   ├── devin.ts          # DevinAdapter: GenerateOptions → Devin RPC → StreamChunk
 │   ├── decoder.ts        # GetChatMessageResponse → StreamChunk translation
+│   ├── rate-limit.ts     # Parse relative duration + UTC clock into a local reset instant
+│   ├── rate-limit-watch.ts   # Reset reminders, backoff waits, status snapshot
+│   ├── rate-limit-observe.ts # Global llm/stream rate-limit fallback and auto-resume
+│   ├── rate-limit-notify.ts  # Optional webhook notification channel
 │   ├── transport.ts      # Connect transport with auth + proxy injection
 │   └── credentials.ts    # Devin CLI credentials.toml auto-detection
 └── proto/

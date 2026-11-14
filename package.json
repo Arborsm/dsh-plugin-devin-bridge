@@ -37,6 +37,7 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit",
     "check": "pnpm run typecheck && pnpm run build",
+    "test": "node --test test/",
     "prepare": "pnpm run build",
     "proto:gen": "protoc -I src/proto --es_out=src/proto/gen --es_opt=target=ts src/proto/devin.proto"
   },

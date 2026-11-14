@@ -58,6 +58,25 @@ const catalogCodec = codec('DevinCatalog', (value) => {
   return value as Record<string, unknown>[]
 })
 
+
+const rateLimitStatusCodec = codec('DevinRateLimitStatus', (value) => {
+  const record = requireObject(value, 'devin rate limit status')
+  const result: Record<string, unknown> = {
+    active: record.active === true,
+    autoResume: record.autoResume === true,
+    reminderEnabled: record.reminderEnabled !== false,
+    maxResumeAttempts: typeof record.maxResumeAttempts === 'number' ? record.maxResumeAttempts : 0,
+    resumeAttempts: typeof record.resumeAttempts === 'number' ? record.resumeAttempts : 0,
+  }
+  for (const key of ['code', 'message', 'resetAtUtc', 'resetAtLocal', 'lastNotice'] as const) {
+    if (typeof record[key] === 'string') result[key] = record[key]
+  }
+  for (const key of ['resetAt', 'remainingMs', 'lastNoticeAt'] as const) {
+    if (typeof record[key] === 'number' && Number.isFinite(record[key])) result[key] = record[key]
+  }
+  return result
+})
+
 /** Wires of the `devin` namespace, in service order. */
 export const DEVIN_INVOCATIONS = [
   {
@@ -89,6 +108,46 @@ export const DEVIN_INVOCATIONS = [
     parameters: [],
     result: catalogCodec,
     description: 'Family-merged model catalog with effort tier maps, for settings adoption.',
+  },
+  {
+    id: 'dsh-plugin-devin-bridge#devin/rateLimit',
+    service: 'devin',
+    namespace: 'devin',
+    method: 'rateLimit',
+    invocation: { kind: 'direct' as const },
+    parameters: [],
+    result: rateLimitStatusCodec,
+    description: 'Current rate-limit cycle: code, reset instant (UTC + local), auto-resume state.',
+  },
+  {
+    id: 'dsh-plugin-devin-bridge#devin/cancelRateLimit',
+    service: 'devin',
+    namespace: 'devin',
+    method: 'cancelRateLimit',
+    invocation: { kind: 'direct' as const },
+    parameters: [],
+    result: rateLimitStatusCodec,
+    description: 'Cancel the pending rate-limit reminder and auto-resume wait.',
+  },
+  {
+    id: 'dsh-plugin-devin-bridge#devin/enableRateLimitAutoResume',
+    service: 'devin',
+    namespace: 'devin',
+    method: 'enableRateLimitAutoResume',
+    invocation: { kind: 'direct' as const },
+    parameters: [],
+    result: rateLimitStatusCodec,
+    description: 'Turn automatic resume-on-reset on for this run.',
+  },
+  {
+    id: 'dsh-plugin-devin-bridge#devin/disableRateLimitAutoResume',
+    service: 'devin',
+    namespace: 'devin',
+    method: 'disableRateLimitAutoResume',
+    invocation: { kind: 'direct' as const },
+    parameters: [],
+    result: rateLimitStatusCodec,
+    description: 'Turn automatic resume-on-reset off for this run.',
   },
 ]
 
