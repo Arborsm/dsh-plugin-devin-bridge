@@ -65,11 +65,54 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
         initialDelayMs: 500
         maxDelayMs: 10000
         jitterRatio: 0.1
+    rateLimitReminder: true  # 可选：限流到点提醒（默认开启）
+    rateLimitReminderLeadMinutes: 5  # 可选：提前多少分钟提醒；0 = 只在到点提醒
+    rateLimitAutoResume: false  # 可选：重置到点后自动继续（默认关闭）
+    rateLimitMaxResumeAttempts: 3  # 可选：自动继续的最大尝试次数
+    rateLimitNotifyUrl: ""  # 可选：webhook，POST 一条 JSON；留空只写 Host 日志
 ```
 
 当 dsh settings 服务可用时，以上所有字段都可以在 插件详情页（插件 → dsh-plugin-devin-bridge）的 **Devin Bridge** 卡片 里运行时动态调整——全部字段都是 `volatile`，写入即时生效且不会 remount。`token` 字段标记为 `role('secret')`，在返回给 wire surface 的 settings descriptor 中自动脱敏。
 
 插件的 settings namespace 等于 composition entry id（`cordis.patch.yml` 中的 `devin-bridge`）；用其他 entry id 组合该插件时，namespace 也随之变化。
+
+## 限流提醒与自动继续
+
+免费模型触发限流时，上游返回的报错形如：
+
+```text
+[resource_exhausted] Reached free model rate limit. Upgrade to Max for higher limits, or switch to a different model. Your limit will reset in 1 hour 48 minutes (at 21:01 UTC).
+```
+
+插件解析其中的**相对时长**（1 小时 48 分钟）与**绝对钟点**（21:01 UTC）：以绝对钟点为准（同一天有今/明/昨三个候选，用相对时长对齐），再换算成本地时间展示。
+
+| 字段 | 示例 |
+| --- | --- |
+| 错误码 | `resource_exhausted` |
+| 原始文案 | 完整保留，不做改写 |
+| 重置时间 (UTC) | `2026-11-14 21:01:00 UTC` |
+| 重置时间 (本地) | `2026-11-15 05:01:00 UTC+8`（Asia/Shanghai） |
+
+**提醒**：默认在重置前 5 分钟发一条预告，到点再发一条「可以重新运行」；内容含错误码、UTC 与本地重置时间、原始文案。渠道按可用性降级：Host 日志（默认）→ 可选 webhook；设置页「限流提醒」卡会实时显示错误码、UTC 与本地重置时间、剩余时长。`rateLimitReminder: false` 可整体关闭通知（重置时间仍显示在设置页）。
+
+**自动继续**（默认关闭，三种开启方式）：
+
+1. 设置页 → Devin →「限流提醒」卡 → 出现限流时点「开启自动继续」；
+2. 配置 `rateLimitAutoResume: true`；
+3. 程序化调用 `remote.devin.enableRateLimitAutoResume()`。
+
+开启后，撞限流且本次尝试尚未产出任何内容时，插件等到重置点再重放同一请求；重置点已过或原文没给可解析时间时按指数退避（5s 起、封顶 60s、±10% 抖动），最多 `rateLimitMaxResumeAttempts` 次。已经产出文本/推理/工具调用则不重放，只登记提醒并原样上报限流错误，避免把两段回答拼进同一条消息。
+
+手动控制：`remote.devin.cancelRateLimit()` 取消挂起的提醒与等待；`remote.devin.disableRateLimitAutoResume()` 关闭自动继续；`remote.devin.rateLimit()` 读取当前状态（`active`/`resetAtUtc`/`resetAtLocal`/`remainingMs`）。
+
+### 验证提醒
+
+```bash
+# 用固定时钟复现本次失败：19:13 UTC 收到「1 小时 48 分钟后、21:01 UTC」的重置
+node scripts/rate-limit-probe.ts --at 2026-11-14T19:13:00Z
+```
+
+输出给出 UTC 与本地（Asia/Shanghai 为 2026-11-15 05:01:00 UTC+8）的重置时刻，以及预告/到点两次通知的本地时间。真实到点触发由 `pnpm test` 的假时钟用例覆盖：`test/rate-limit.test.ts` 的「到点前发预告、到点发『可以重新运行』提醒」。
 
 ## 使用方式
 
@@ -85,6 +128,7 @@ pnpm add https://github.com/Arborsm/dsh-plugin-devin-bridge.git
 - **图片支持**：有视觉能力的模型通过 dsh 的 attachment 系统接受图片输入。遵循上游约定，图片只挂在当前轮（最后一条 assistant 之后）；历史图片降级为文本占位。
 - **Token 用量**：输入/输出/缓存 token 计量上报给 dsh
 - **重试策略**：provider 级 `retryPolicy` 配置经 dsh `resolveRetryPolicy` 解析（normal/always 模式）
+- **限流提醒与自动继续**：解析 `[resource_exhausted]` 报错里的相对时长与 UTC 钟点，换算本地时间后到点提醒；可选在重置到点后按退避自动继续（默认关闭，可手动开关/取消）
 - **系统提示词清洗**：跨模型兼容的身份无关系统提示词重写
 - **代理支持**：可选的出站 HTTP/HTTPS/SOCKS5 代理
 - **volatile 设置**：通过插件详情页运行时调整配置，写入即时生效
@@ -99,6 +143,10 @@ src/
 ├── adapter/
 │   ├── devin.ts          # DevinAdapter：GenerateOptions → Devin RPC → StreamChunk
 │   ├── decoder.ts        # GetChatMessageResponse → StreamChunk 转换
+│   ├── rate-limit.ts     # 解析相对时长 + UTC 钟点，换算本地重置时间
+│   ├── rate-limit-watch.ts   # 到点提醒、退避等待、状态快照
+│   ├── rate-limit-observe.ts # llm/stream 瀑布上的全局限流兜底与自动继续
+│   ├── rate-limit-notify.ts  # 可选 webhook 通知渠道
 │   ├── transport.ts      # Connect transport，注入 auth + proxy
 │   └── credentials.ts    # Devin CLI credentials.toml 自动检测
 └── proto/

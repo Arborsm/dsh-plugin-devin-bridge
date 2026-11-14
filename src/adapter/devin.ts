@@ -57,6 +57,8 @@ import type {
 } from '../proto/gen/devin_pb.ts'
 import { createDevinTransport } from './transport.ts'
 import { DevinStreamDecoder, wrapConnectError } from './decoder.ts'
+import { findRateLimitFailure, originalMessage } from './rate-limit.ts'
+import type { RateLimitWatcher } from './rate-limit-watch.ts'
 
 const CLIENT_NAME = 'chisel'
 const CLIENT_VERSION = '3000.2.17'
@@ -115,6 +117,8 @@ export interface DevinConnectionOptions {
 export interface DevinAdapterOptions {
   /** 当前连接配置；每次操作时调用以获取最新快照。 */
   options: () => DevinConnectionOptions
+  /** 可选：限流到点提醒 / 自动继续；缺省时把限流当普通失败抛出。 */
+  rateLimit?: RateLimitWatcher
 }
 
 // ─── DevinAdapter ───────────────────────────────────────────────────────────
@@ -289,6 +293,8 @@ function formatDiscoveredName(m: DevinCatalogModel): string {
 
 export class DevinAdapter extends LlmAdapter {
   private readonly config: DevinAdapterOptions
+  /** 限流到点提醒与自动继续的运行时（可选）。 */
+  private readonly rateLimit: RateLimitWatcher | undefined
   // transport/client 缓存：配置变更时重建
   private cachedClient: ReturnType<typeof createClient<typeof ApiServerService>> | null = null
   private cachedClientKey = ''
@@ -297,6 +303,7 @@ export class DevinAdapter extends LlmAdapter {
   constructor(options: DevinAdapterOptions) {
     super()
     this.config = options
+    this.rateLimit = options.rateLimit
   }
 
   /** 当前连接配置（每次调用读取最新快照）。 */
@@ -590,6 +597,23 @@ export class DevinAdapter extends LlmAdapter {
       )
     }
 
+    try {
+      yield* this.streamAttempt(options, c, protoRequest)
+    } catch (err) {
+      const failure = err instanceof LlmError ? err : wrapConnectError(err)
+      // 只登记提醒，不在这里等待/重试：等待与重放统一由 llm/stream
+      // 瀑布上的 rateLimitStream 负责，避免两处重试叠乘。
+      this.reportRateLimit(failure)
+      throw failure
+    }
+  }
+
+  /** 单次尝试：连接 + 解码；限流失败转成 LlmError 抛出，由上层瀑布等待重放。 */
+  private async *streamAttempt(
+    options: GenerateOptions,
+    c: DevinConnectionOptions,
+    protoRequest: GetChatMessageRequest,
+  ): AsyncIterable<StreamChunk> {
     // 调用 Devin RPC
     let serverStream: AsyncIterable<import('../proto/gen/devin_pb.ts').GetChatMessageResponse>
     try {
@@ -623,7 +647,24 @@ export class DevinAdapter extends LlmAdapter {
       }
     }
 
-    yield* decoder.finish(upstreamError)
+    const tail = decoder.finish(upstreamError)
+    // 流内到达的限流失败：配置了 watcher 时改为抛出，让上层登记提醒/等待重置。
+    // 不配置 watcher 时保持原行为（finish 块原样下发）。
+    const limit = this.rateLimit ? findRateLimitFailure(tail) : undefined
+    if (limit) throw new LlmError(limit.message, 'RATE_LIMIT')
+    yield* tail
+  }
+
+  /** 限流失败登记到点提醒（解析失败不影响原始错误上报）。 */
+  private reportRateLimit(failure: LlmError): void {
+    const watcher = this.rateLimit
+    if (!watcher || failure.code !== 'RATE_LIMIT') return
+    try {
+      // 去掉适配器前缀，通知里保留上游原文；解析基准用 watcher 的时钟。
+      watcher.report(watcher.parse(originalMessage(failure.message)))
+    } catch {
+      // 解析/登记失败只影响提醒，不改变生成结果。
+    }
   }
 
   // ─── buildRequest ─────────────────────────────────────────────────────────

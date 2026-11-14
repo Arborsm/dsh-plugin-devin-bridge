@@ -40,3 +40,10 @@
             initialDelayMs: 500
             maxDelayMs: 10000
             jitterRatio: 0.1
+        # 免费模型限流（[resource_exhausted]）：
+        # 到点提醒默认开启；自动继续默认关闭，可在设置页或 remote.devin 手动开。
+        rateLimitReminder: true
+        rateLimitReminderLeadMinutes: 5
+        rateLimitAutoResume: false
+        rateLimitMaxResumeAttempts: 3
+        rateLimitNotifyUrl: ""

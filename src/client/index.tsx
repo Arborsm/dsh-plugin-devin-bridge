@@ -19,7 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type {} from '@deepseek-ai/dsh-llm/remote'
-import { DevinBridgeCard, type DevinBridgeCardProps, type QuotaSource } from './DevinBridgeCard.tsx'
+import { DevinBridgeCard, type DevinBridgeCardProps, type QuotaSource, type RateLimitSource } from './DevinBridgeCard.tsx'
 import { QuotaPill, type QuotaPillProps } from './QuotaPill.tsx'
 import { mountDevinRemote, type DevinRemote } from './remote.ts'
 
@@ -69,6 +69,14 @@ export function apply(ctx: ClientContext): void {
     refreshQuota: () => devinRemote?.refreshQuota() ?? unmounted(),
   }
 
+  // 限流状态源：和额度源同样惰性代理，未挂载时 reject，卡片显示占位。
+  const rateLimitProxy: RateLimitSource = {
+    rateLimit: () => devinRemote?.rateLimit() ?? unmounted(),
+    cancelRateLimit: () => devinRemote?.cancelRateLimit() ?? unmounted(),
+    enableRateLimitAutoResume: () => devinRemote?.enableRateLimitAutoResume() ?? unmounted(),
+    disableRateLimitAutoResume: () => devinRemote?.disableRateLimitAutoResume() ?? unmounted(),
+  }
+
   const face = (embedded: boolean) => (): DevinBridgeCardProps => ({
     embedded,
     form: ctx.configForms.get(SETTINGS_NS),
@@ -76,6 +84,7 @@ export function apply(ctx: ClientContext): void {
     // remote.llm.discoverModels 的 LlmDiscoveredModel 形状放不下。
     discover: () => devinRemote?.catalog() ?? unmounted(),
     remote: quotaProxy,
+    rateLimit: rateLimitProxy,
   })
 
   // Settings → Devin：设置侧栏中的独立页面。

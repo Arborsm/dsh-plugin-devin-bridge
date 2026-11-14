@@ -34,11 +34,43 @@ export interface DevinCatalogEntry {
   creditMultiplier?: number
 }
 
+/** Rate-limit cycle snapshot returned by `remote.devin.rateLimit()`. */
+export interface DevinRateLimitStatus {
+  /** True while a reset wait or auto-resume backoff is pending. */
+  active: boolean
+  /** Upstream failure code, e.g. `resource_exhausted`. */
+  code?: string
+  /** Original upstream message, preserved verbatim. */
+  message?: string
+  /** Reset instant, epoch milliseconds. */
+  resetAt?: number
+  /** Reset instant rendered in UTC. */
+  resetAtUtc?: string
+  /** Reset instant rendered in the viewer's local time. */
+  resetAtLocal?: string
+  /** Milliseconds until the reset instant; 0 once reached. */
+  remainingMs?: number
+  /** Whether the reset reminder is currently on. */
+  reminderEnabled: boolean
+  /** Whether automatic resume-on-reset is currently on. */
+  autoResume: boolean
+  /** Upper bound on automatic resume attempts. */
+  maxResumeAttempts: number
+  /** Automatic resume attempts used in this cycle. */
+  resumeAttempts: number
+  lastNotice?: 'reminder' | 'reset'
+  lastNoticeAt?: number
+}
+
 /** The namespace service the gateway installs as `remote.devin`. */
 export interface DevinRemote {
   quota(): Promise<RemoteResult<DevinQuotaPayload>>
   refreshQuota(): Promise<RemoteResult<DevinQuotaPayload>>
   catalog(): Promise<RemoteResult<DevinCatalogEntry[]>>
+  rateLimit(): Promise<RemoteResult<DevinRateLimitStatus>>
+  cancelRateLimit(): Promise<RemoteResult<DevinRateLimitStatus>>
+  enableRateLimitAutoResume(): Promise<RemoteResult<DevinRateLimitStatus>>
+  disableRateLimitAutoResume(): Promise<RemoteResult<DevinRateLimitStatus>>
 }
 
 const passthrough = (name: string) => ({
@@ -64,6 +96,10 @@ export const CONTRIBUTION = {
     descriptor('quota'),
     descriptor('refreshQuota'),
     descriptor('catalog', 'DevinCatalog'),
+    descriptor('rateLimit', 'DevinRateLimitStatus'),
+    descriptor('cancelRateLimit', 'DevinRateLimitStatus'),
+    descriptor('enableRateLimitAutoResume', 'DevinRateLimitStatus'),
+    descriptor('disableRateLimitAutoResume', 'DevinRateLimitStatus'),
   ],
 }
 
