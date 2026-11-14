@@ -58,6 +58,7 @@ import type {
 import { createDevinTransport } from './transport.ts'
 import { DevinStreamDecoder, wrapConnectError } from './decoder.ts'
 import { findRateLimitFailure, originalMessage } from './rate-limit.ts'
+import { resumeOnRateLimit } from './rate-limit-observe.ts'
 import type { RateLimitWatcher } from './rate-limit-watch.ts'
 
 const CLIENT_NAME = 'chisel'
@@ -608,17 +609,21 @@ export class DevinAdapter extends LlmAdapter {
     }
 
     try {
-      yield* this.streamAttempt(options, c, protoRequest)
+      // 自动继续只能在这一层做：streamAttempt 每次调用都新建 RPC 流，
+      // 是真正可重放的工厂。llm/stream 瀑布上的 next() 是一次性的，
+      // 在瀑布层重放会抛 next() called multiple times（cordis 硬性限制）。
+      yield* this.rateLimit
+        ? resumeOnRateLimit(() => this.streamAttempt(options, c, protoRequest), this.rateLimit, undefined, options.signal)
+        : this.streamAttempt(options, c, protoRequest)
     } catch (err) {
       const failure = err instanceof LlmError ? err : wrapConnectError(err)
-      // 只登记提醒，不在这里等待/重试：等待与重放统一由 llm/stream
-      // 瀑布上的 rateLimitStream 负责，避免两处重试叠乘。
+      // resumeOnRateLimit 内部已登记限流；这里兜底覆盖未走 helper 的路径。
       this.reportRateLimit(failure)
       throw failure
     }
   }
 
-  /** 单次尝试：连接 + 解码；限流失败转成 LlmError 抛出，由上层瀑布等待重放。 */
+  /** 单次尝试：连接 + 解码；限流失败转成 LlmError 抛出，由 resumeOnRateLimit 等待重放。 */
   private async *streamAttempt(
     options: GenerateOptions,
     c: DevinConnectionOptions,

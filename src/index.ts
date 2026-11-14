@@ -261,10 +261,12 @@ export function apply(ctx: Context, config: Config): void {
     })
   })
   // 兜底观察：任何经 dsh-llm 路由的模型（不只 devin）撞限流时也登记提醒。
+  // 瀑布的 next 是一次性的、不能重放，这里只观察不续传；
+  // devin 模型的自动继续在 adapter 内部（resumeOnRateLimit 重发 RPC）。
   // adapter 自己也会 report，重复上报由 watcher 的容差去重。
   ctx.effect(() =>
-    ctx.on('llm/stream', (options, next) =>
-      rateLimitStream(next, watcher, (level, message) => ctx.logger[level](message), options.signal),
+    ctx.on('llm/stream', (_options, next) =>
+      rateLimitStream(next, watcher, (level, message) => ctx.logger[level](message)),
     ),
   )
   // 插件卸载时清掉挂着的提醒计时器。

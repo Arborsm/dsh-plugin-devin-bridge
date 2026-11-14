@@ -1,7 +1,7 @@
 // 限流重置监视器：到点提醒 + 到点自动继续，跑在 Host 进程。
 //
-// 调用方（llm/stream 瀑布上的 rateLimitStream、DevinAdapter）撞上 RATE_LIMIT
-// 后调用 report()：
+// 调用方（llm/stream 瀑布上的 rateLimitStream、DevinAdapter 内的
+// resumeOnRateLimit）撞上 RATE_LIMIT 后调用 report()：
 //   - report() 安排「到点前预告」与「到点」两条通知（reminderLeadMs = 0 时
 //     只在到点发一次）。通知本身不阻塞生成请求。
 //   - 自动继续开启时，调用方接着 await waitUntilReset() 等到重置点再重放请求；

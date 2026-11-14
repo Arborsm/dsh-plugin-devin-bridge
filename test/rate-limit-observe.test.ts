@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
-import { rateLimitStream } from '../src/adapter/rate-limit-observe.ts'
+import { rateLimitStream, resumeOnRateLimit } from '../src/adapter/rate-limit-observe.ts'
 import { RateLimitWatcher } from '../src/adapter/rate-limit-watch.ts'
 
 const FAILURE =
@@ -84,10 +84,30 @@ test('关闭自动继续：只登记提醒，把限流错误抛出', async () =>
   assert.deepEqual(watcher.status().resetAtUtc, '2026-11-14 21:01:00 UTC')
 })
 
+test('瀑布层只观察：自动继续开启时 next 也只调一次，不重放', async () => {
+  // cordis waterfall 的 next 是一次性的：rateLimitStream 必须只调用一次，
+  // 否则生产环境会抛 next() called multiple times。
+  const cycle = fakeClock(Date.UTC(2026, 10, 14, 19, 13))
+  const watcher = new RateLimitWatcher({ autoResume: true, now: cycle.now, schedule: cycle.schedule })
+  let calls = 0
+  const stream = rateLimitStream(() => {
+    calls++
+    return scriptedStream(['fail', 'ok'])()
+  }, watcher)
+  await assert.rejects(
+    (async () => {
+      for await (const _ of stream) void _
+    })(),
+    (error: Error) => (error as Error & { code?: string }).code === 'RATE_LIMIT',
+  )
+  assert.equal(calls, 1)
+  assert.equal(watcher.status().active, true)
+})
+
 test('开启自动继续：等重置点后重放成功，只产出一份内容', async () => {
   const cycle = fakeClock(Date.UTC(2026, 10, 14, 19, 13))
   const watcher = new RateLimitWatcher({ autoResume: true, now: cycle.now, schedule: cycle.schedule })
-  const stream = rateLimitStream(scriptedStream(['fail', 'ok']), watcher)
+  const stream = resumeOnRateLimit(scriptedStream(['fail', 'ok']), watcher)
   const chunks: StreamChunk[] = []
   let finished = false
   const done = (async () => {
@@ -122,7 +142,7 @@ test('已经产出内容后撞限流：不重放，原样抛出', async () => {
       throw new Error('should not retry after emission')
     })()
   }
-  const stream = rateLimitStream(factory, watcher)
+  const stream = resumeOnRateLimit(factory, watcher)
   const chunks: StreamChunk[] = []
   await assert.rejects(
     (async () => {
